@@ -1,6 +1,33 @@
+/**
+ * Candlestick chart using TradingView’s Lightweight Charts (https://github.com/tradingview/lightweight-charts).
+ * Time axis is formatted in IST (Asia/Kolkata).
+ */
 import { useEffect, useRef, useState } from 'react'
-import { createChart } from 'lightweight-charts'
+import { createChart, TickMarkType } from 'lightweight-charts'
 import type { OHLCVCandle } from '../api/types'
+
+const IST_TIMEZONE = 'Asia/Kolkata'
+
+/** Format a UTC Unix timestamp (seconds) as IST for the chart time axis. Keep labels short (≤8 chars) per library docs. */
+function formatTickMarkIST(time: unknown, tickMarkType: TickMarkType): string {
+  const sec = typeof time === 'number' ? time : 0
+  const d = new Date(sec * 1000)
+  const opts: Intl.DateTimeFormatOptions = { timeZone: IST_TIMEZONE }
+  switch (tickMarkType) {
+    case TickMarkType.Year:
+      return d.toLocaleString('en-IN', { ...opts, year: 'numeric' })
+    case TickMarkType.Month:
+      return d.toLocaleString('en-IN', { ...opts, month: 'short' })
+    case TickMarkType.DayOfMonth:
+      return d.toLocaleString('en-IN', { ...opts, day: 'numeric' })
+    case TickMarkType.Time:
+      return d.toLocaleString('en-IN', { ...opts, hour: '2-digit', minute: '2-digit', hour12: false })
+    case TickMarkType.TimeWithSeconds:
+      return d.toLocaleString('en-IN', { ...opts, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+    default:
+      return d.toLocaleString('en-IN', { ...opts, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+  }
+}
 
 // Hex colors so the chart library (canvas) can use them; it doesn't resolve CSS variables
 const CHART_THEME = {
@@ -67,6 +94,7 @@ export default function CandlestickChart({ candles, height = 360 }: CandlestickC
           borderColor: CHART_THEME.border,
           timeVisible: true,
           secondsVisible: true,
+          tickMarkFormatter: (time: unknown, tickMarkType: TickMarkType) => formatTickMarkIST(time, tickMarkType),
         },
         crosshair: {
           vertLine: { color: CHART_THEME.text },

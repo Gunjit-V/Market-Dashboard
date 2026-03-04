@@ -22,6 +22,10 @@ frontend/dist/
 .idea/
 .vscode/
 
+# Data files
+instrument_master.csv
+nse_equities.csv
+
 # Logs
 *.log
 
