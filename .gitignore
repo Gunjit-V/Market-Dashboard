@@ -1,14 +1,22 @@
 # Virtual Environment
 venv/
 
-# Environment Variables
+# Environment Variables (never commit secrets)
 .env
+.env.local
+.env.*.local
+*.env
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
 
 # IDE
 .idea/
