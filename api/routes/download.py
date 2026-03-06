@@ -11,43 +11,80 @@ def get_download_status(conn=Depends(get_db)):
     """Get overall download pipeline status."""
     try:
         with conn.cursor() as cur:
-            # Total instruments
-            cur.execute("SELECT COUNT(*) FROM instruments")
-            total_instruments = cur.fetchone()[0]
+            # Total instruments by type
+            cur.execute("""
+                SELECT instrument_type, COUNT(*) 
+                FROM instruments 
+                GROUP BY instrument_type
+                ORDER BY instrument_type
+            """)
+            instruments_by_type = {row[0]: row[1] for row in cur.fetchall()}
 
             # Total candles
             cur.execute("SELECT COUNT(*) FROM ohlcv_1min")
             total_candles = cur.fetchone()[0]
 
-            # Latest download run
-            cur.execute(
-                """
+            # Candles by instrument type
+            cur.execute("""
+                SELECT i.instrument_type, COUNT(o.id)
+                FROM ohlcv_1min o
+                JOIN instruments i ON i.id = o.instrument_id
+                GROUP BY i.instrument_type
+                ORDER BY i.instrument_type
+            """)
+            candles_by_type = {row[0]: row[1] for row in cur.fetchall()}
+
+            # Latest run info
+            cur.execute("""
                 SELECT last_run_at, status
                 FROM download_log
                 ORDER BY last_run_at DESC
                 LIMIT 1
-                """
-            )
+            """)
             latest_run = cur.fetchone()
 
-            # Count by status
-            cur.execute(
-                """
-                SELECT status, COUNT(*)
+            # Last successful download
+            cur.execute("""
+                SELECT last_run_at, last_downloaded_at
                 FROM download_log
+                WHERE status = 'success'
+                ORDER BY last_run_at DESC
+                LIMIT 1
+            """)
+            last_success = cur.fetchone()
+
+            # Download counts by status
+            cur.execute("""
+                SELECT status, COUNT(*) 
+                FROM download_log 
                 GROUP BY status
-                """
-            )
+            """)
             status_counts = {row[0]: row[1] for row in cur.fetchall()}
+
+            # Instruments with no data
+            cur.execute("""
+                SELECT COUNT(DISTINCT instrument_id)
+                FROM download_log
+                WHERE status = 'no_data'
+            """)
+            no_data_count = cur.fetchone()[0]
 
         return Response(
             status="success",
             data={
-                "total_instruments": total_instruments,
                 "total_candles": total_candles,
-                "latest_run_at": latest_run[0] if latest_run else None,
-                "latest_run_status": latest_run[1] if latest_run else None,
+                "instruments_by_type": instruments_by_type,
+                "candles_by_type": candles_by_type,
+                "latest_run": {
+                    "run_at": latest_run[0] if latest_run else None,
+                    "status": latest_run[1] if latest_run else None,
+                },
+                "last_successful_run": {
+                    "run_at": last_success[0] if last_success else None,
+                    "last_downloaded_at": last_success[1] if last_success else None,
+                },
                 "download_counts_by_status": status_counts,
+                "instruments_with_no_data": no_data_count,
             }
         )
 

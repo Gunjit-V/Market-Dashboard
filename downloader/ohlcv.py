@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import pyotp
 from SmartApi import SmartConnect
-from connect_db import ConnectionManager
+from db.connection import ConnectionManager
 
 load_dotenv()
 
@@ -15,6 +15,7 @@ TOTP_TOKEN = os.getenv("ANGEL_TOTP_TOKEN")
 
 CHUNK_DAYS = 5
 API_DELAY = 0.5
+DEFAULT_DAYS = 30
 
 
 def authenticate():
@@ -50,6 +51,56 @@ def get_instruments(conn, instrument_types: list[str]) -> list:
             instrument_types,
         )
         return cur.fetchall()
+
+
+def get_last_downloaded_at(conn, instrument_id: int):
+    """Get the last successful download timestamp for an instrument."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT last_downloaded_at
+            FROM download_log
+            WHERE instrument_id = %s
+              AND status = 'success'
+            ORDER BY last_run_at DESC
+            LIMIT 1
+            """,
+            (instrument_id,)
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def write_download_log(
+    conn,
+    instrument_id: int,
+    status: str,
+    last_downloaded_at=None,
+    candles_inserted: int = 0,
+    candles_skipped: int = 0,
+    error_message: str = None,
+):
+    """Write a log entry to the download_log table."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO download_log (
+                instrument_id, last_downloaded_at, last_run_at,
+                status, candles_inserted, candles_skipped, error_message
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                instrument_id,
+                last_downloaded_at,
+                datetime.now(),
+                status,
+                candles_inserted,
+                candles_skipped,
+                error_message,
+            )
+        )
+    conn.commit()
 
 
 def fetch_candle_data(smartApi, token: str, exchange: str, from_date: str, to_date: str) -> list:
@@ -113,18 +164,27 @@ def save_candles_to_db(conn, instrument_id: int, candles: list) -> tuple[int, in
 
 
 def download_for_instrument(smartApi, conn, instrument: tuple, days: int) -> tuple[int, int]:
-    """Download historical data for a single instrument."""
+    """Download historical data for a single instrument incrementally."""
     instrument_id, symbol, token, exchange, instrument_type, expiry = instrument
 
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=days)
 
-    # For expired instruments, don't bother downloading
+    # Skip expired instruments
     if expiry and expiry < end_date.date():
         return 0, 0
 
+    # Check last successful download — incremental logic
+    last_downloaded_at = get_last_downloaded_at(conn, instrument_id)
+    if last_downloaded_at:
+        # Start from where we left off
+        start_date = last_downloaded_at
+    else:
+        # First time download — fetch full history
+        start_date = end_date - timedelta(days=days)
+
     total_inserted = 0
     total_skipped = 0
+    last_candle_time = None
 
     current_start = start_date
     while current_start < end_date:
@@ -141,14 +201,21 @@ def download_for_instrument(smartApi, conn, instrument: tuple, days: int) -> tup
                 conn, instrument_id, candles)
             total_inserted += inserted
             total_skipped += skipped
+            # Track the latest candle timestamp
+            last_candle_time = candles[-1][0]
+            if isinstance(last_candle_time, str):
+                last_candle_time = datetime.strptime(
+                    last_candle_time, "%Y-%m-%dT%H:%M:%S%z")
+                # Strip timezone info for PostgreSQL
+                last_candle_time = last_candle_time.replace(tzinfo=None)
 
         current_start = current_end
         time.sleep(API_DELAY)
 
-    return total_inserted, total_skipped
+    return total_inserted, total_skipped, last_candle_time
 
 
-def download_historical_data(instrument_types: list[str], days: int = 30):
+def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DAYS):
     """Download historical 1-minute data for all instruments of given types."""
     smartApi = authenticate()
     if not smartApi:
@@ -163,7 +230,8 @@ def download_historical_data(instrument_types: list[str], days: int = 30):
         instruments = get_instruments(conn, instrument_types)
         total = len(instruments)
         print(f"\nFound {total} instruments to download: {instrument_types}")
-        print(f"Downloading {days} days of 1-minute data...\n")
+        print(
+            f"Downloading up to {days} days of 1-minute data (incremental)...\n")
 
         grand_total_inserted = 0
         grand_total_skipped = 0
@@ -171,18 +239,40 @@ def download_historical_data(instrument_types: list[str], days: int = 30):
 
         for idx, instrument in enumerate(instruments, start=1):
             instrument_id, symbol, token, exchange, instrument_type, expiry = instrument
-            print(
-                f"[{idx}/{total}] {symbol} ({instrument_type}, {exchange})", end=" → ")
+            print(f"[{idx}/{total}] {symbol} ({instrument_type})", end=" → ")
 
             try:
-                inserted, skipped = download_for_instrument(
-                    smartApi, conn, instrument, days
-                )
+                result = download_for_instrument(
+                    smartApi, conn, instrument, days)
+                inserted, skipped, last_candle_time = result
+
                 grand_total_inserted += inserted
                 grand_total_skipped += skipped
-                print(f"Inserted: {inserted}, Skipped: {skipped}")
+
+                if inserted == 0 and skipped == 0:
+                    # No data returned from API
+                    write_download_log(
+                        conn, instrument_id,
+                        status="no_data",
+                    )
+                    print("No data.")
+                else:
+                    # Successful download
+                    write_download_log(
+                        conn, instrument_id,
+                        status="success",
+                        last_downloaded_at=last_candle_time,
+                        candles_inserted=inserted,
+                        candles_skipped=skipped,
+                    )
+                    print(f"Inserted: {inserted}, Skipped: {skipped}")
 
             except Exception as e:
+                write_download_log(
+                    conn, instrument_id,
+                    status="failed",
+                    error_message=str(e),
+                )
                 print(f"FAILED: {e}")
                 failed.append(symbol)
                 continue
@@ -205,8 +295,7 @@ def download_historical_data(instrument_types: list[str], days: int = 30):
 
 
 if __name__ == "__main__":
-    # Download Nifty Index + Futures + Options
     download_historical_data(
         instrument_types=["AMXIDX", "FUTIDX", "OPTIDX"],
-        days=30
+        days=DEFAULT_DAYS
     )

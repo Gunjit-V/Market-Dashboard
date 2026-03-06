@@ -48,7 +48,7 @@ if __name__ == "__main__":
 
     if df is not None:
         # Save full master to CSV for reference
-        df.to_csv("instrument_master.csv", index=False)
+        df.to_csv("data/instrument_master.csv", index=False)
         print("Full instrument master saved to instrument_master.csv")
 
         # Filter and save NSE equities

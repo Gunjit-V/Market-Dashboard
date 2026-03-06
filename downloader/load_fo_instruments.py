@@ -4,7 +4,7 @@ import pyotp
 from datetime import datetime
 from SmartApi import SmartConnect
 from dotenv import load_dotenv
-from connect_db import ConnectionManager
+from connection import ConnectionManager
 
 load_dotenv()
 
@@ -73,7 +73,7 @@ def filter_nifty_futures(df: pd.DataFrame) -> pd.DataFrame:
     return futures
 
 
-def load_master(csv_path: str = "instrument_master.csv") -> pd.DataFrame:
+def load_master(csv_path: str = "data/instrument_master.csv") -> pd.DataFrame:
     """Load the instrument master CSV."""
     df = pd.read_csv(csv_path, low_memory=False)
     df["token"] = df["token"].astype(str)

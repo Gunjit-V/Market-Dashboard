@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 from dotenv import load_dotenv
-from connect_db import ConnectionManager
+from db.connection import ConnectionManager
 
 load_dotenv()
 

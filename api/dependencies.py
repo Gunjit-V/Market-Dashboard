@@ -1,4 +1,4 @@
-from connect_db import ConnectionManager
+from db.connection import ConnectionManager
 
 manager = ConnectionManager()
 

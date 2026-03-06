@@ -1,0 +1,627 @@
+import os
+import json
+import time
+import threading
+from datetime import datetime, timedelta
+from queue import Queue, Empty
+from dotenv import load_dotenv
+import pyotp
+from SmartApi import SmartConnect
+from SmartApi.smartWebSocketV2 import SmartWebSocketV2
+from db.connection import ConnectionManager
+
+load_dotenv()
+
+API_KEY = os.getenv("ANGEL_API_KEY")
+CLIENT_ID = os.getenv("ANGEL_CLIENT_ID")
+PASSWORD = os.getenv("ANGEL_PASSWORD")
+TOTP_TOKEN = os.getenv("ANGEL_TOTP_TOKEN")
+
+# Number of ticks to batch before inserting into DB
+BATCH_SIZE = 100
+
+# WebSocket subscription modes
+MODE_LTP = 1         # Last Traded Price only (lightest)
+MODE_QUOTE = 2       # LTP + OHLC + Volume
+MODE_SNAP_QUOTE = 3  # Full data: OHLC, volume, OI, avg price, best 5 bid/ask
+
+# Angel One exchange type codes for WebSocket
+EXCHANGE_TYPE = {
+    "NSE": 1,
+    "NFO": 2,
+    "BSE": 3,
+    "BFO": 4,
+    "MCX": 5,
+}
+
+CORRELATION_ID = "tick_session_1"
+
+
+# ── Authentication ─────────────────────────────────────────────────────────────
+
+def authenticate() -> dict | None:
+    """
+    Authenticate with Angel One SmartAPI.
+    Returns dict with auth_token, refresh_token, feed_token or None on failure.
+    """
+    try:
+        smartApi = SmartConnect(API_KEY)
+        totp = pyotp.TOTP(TOTP_TOKEN).now()
+        data = smartApi.generateSession(CLIENT_ID, PASSWORD, totp)
+
+        if not data["status"]:
+            print("Authentication failed:", data)
+            return None
+
+        print("Authentication successful!")
+        return {
+            "auth_token":    data["data"]["jwtToken"],
+            "refresh_token": data["data"]["refreshToken"],
+            "feed_token":    smartApi.getfeedToken(),
+        }
+
+    except Exception as e:
+        print(f"Authentication error: {e}")
+        return None
+
+
+# ── Database Setup ─────────────────────────────────────────────────────────────
+
+def create_tick_table_if_not_exists(conn):
+    """
+    Create the tick_data table with full SNAP_QUOTE schema if it doesn't exist.
+
+    Columns:
+        ltp, ltq                        — last traded price & quantity
+        open, high, low, close          — day OHLC prices
+        avg_trade_price                 — VWAP
+        volume                          — cumulative day volume
+        total_buy_qty, total_sell_qty   — pending order quantities
+        open_interest                   — OI (derivatives only)
+        best_5_buy, best_5_sell         — top 5 bid/ask levels as JSONB
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS tick_data (
+                    id                  BIGSERIAL PRIMARY KEY,
+                    instrument_id       INTEGER NOT NULL REFERENCES instruments(id),
+                    timestamp           TIMESTAMP NOT NULL,
+                    ltp                 DECIMAL(12, 2) NOT NULL,
+                    ltq                 INTEGER,
+                    open                DECIMAL(12, 2),
+                    high                DECIMAL(12, 2),
+                    low                 DECIMAL(12, 2),
+                    close               DECIMAL(12, 2),
+                    avg_trade_price     DECIMAL(12, 2),
+                    volume              BIGINT,
+                    total_buy_qty       BIGINT,
+                    total_sell_qty      BIGINT,
+                    open_interest       BIGINT,
+                    best_5_buy          JSONB,
+                    best_5_sell         JSONB,
+                    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(instrument_id, timestamp)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_tick_data_instrument_timestamp
+                ON tick_data(instrument_id, timestamp DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_tick_data_timestamp
+                ON tick_data(timestamp DESC);
+            """)
+            conn.commit()
+            print("tick_data table verified/created successfully.")
+    except Exception as e:
+        print(f"Error creating tick_data table: {e}")
+        conn.rollback()
+
+
+# ── Instrument Fetching ────────────────────────────────────────────────────────
+
+def get_instruments(conn, instrument_types: list[str], limit: int = None) -> list:
+    """
+    Fetch instruments filtered by instrument type.
+    Returns list of (id, symbol, token, exchange, instrument_type, expiry).
+    """
+    placeholders = ",".join(["%s"] * len(instrument_types))
+    query = f"""
+        SELECT id, symbol, token, exchange, instrument_type, expiry
+        FROM instruments
+        WHERE instrument_type IN ({placeholders})
+        ORDER BY instrument_type, symbol
+    """
+    if limit:
+        query += f" LIMIT {limit}"
+
+    with conn.cursor() as cur:
+        cur.execute(query, instrument_types)
+        return cur.fetchall()
+
+
+def build_token_list(instruments: list) -> list:
+    """
+    Build subscription token list grouped by exchange type.
+
+    SmartWebSocketV2 format:
+        [{"exchangeType": 1, "tokens": ["token1", "token2"]}, ...]
+    """
+    exchange_tokens = {}
+    for inst in instruments:
+        exchange = inst[3]
+        token = str(inst[2])
+        exch_type = EXCHANGE_TYPE.get(exchange)
+        if exch_type is None:
+            continue
+        exchange_tokens.setdefault(exch_type, []).append(token)
+
+    return [
+        {"exchangeType": exch_type, "tokens": tokens}
+        for exch_type, tokens in exchange_tokens.items()
+    ]
+
+
+def build_token_map(instruments: list) -> dict:
+    """
+    Build a token → instrument_id map for fast lookup in tick callbacks.
+    """
+    return {str(inst[2]): inst[0] for inst in instruments}
+
+
+# ── Tick Parsing ───────────────────────────────────────────────────────────────
+
+def _paise_to_rupees(value) -> float | None:
+    """Convert paise integer to rupees float. Returns None if value is missing."""
+    if value is None:
+        return None
+    try:
+        return float(value) / 100
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_best5(raw_list: list) -> list | None:
+    """
+    Parse best 5 bid or ask levels from SNAP_QUOTE response.
+    Returns a list of {price, quantity, orders} dicts with rupee prices.
+    """
+    if not raw_list:
+        return None
+    try:
+        result = []
+        for entry in raw_list:
+            price = _paise_to_rupees(entry.get("price"))
+            if price is not None:
+                result.append({
+                    "price":    price,
+                    "quantity": entry.get("quantity"),
+                    "orders":   entry.get("num_orders") or entry.get("orders"),
+                })
+        return result if result else None
+    except Exception:
+        return None
+
+
+def parse_tick(raw: dict, token_map: dict) -> dict | None:
+    """
+    Parse a raw SmartWebSocketV2 SNAP_QUOTE tick into our internal format.
+
+    All prices from the API are in paise — divide by 100 to get rupees.
+
+    SNAP_QUOTE fields used:
+        token                       - instrument token
+        last_traded_price           - LTP in paise
+        last_traded_quantity        - last traded quantity
+        average_trade_price         - VWAP in paise
+        volume_trade_for_the_day    - cumulative day volume
+        total_buy_quantity          - total pending buy quantity
+        total_sell_quantity         - total pending sell quantity
+        open_price_of_the_day       - day open in paise
+        high_price_of_the_day       - day high in paise
+        low_price_of_the_day        - day low in paise
+        closed_price                - previous close in paise
+        open_interest               - OI (derivatives only)
+        last_traded_timestamp       - Unix timestamp of actual trade
+        best_5_buy_data             - list of top 5 bid levels
+        best_5_sell_data            - list of top 5 ask levels
+    """
+    try:
+        token = str(raw.get("token", ""))
+        if token not in token_map:
+            return None
+
+        ltp = _paise_to_rupees(raw.get("last_traded_price"))
+        if not ltp or ltp <= 0:
+            return None  # Skip invalid ticks
+
+        # Use actual market trade timestamp, not server receive time
+        raw_ts = raw.get("last_traded_timestamp")
+        timestamp = datetime.fromtimestamp(
+            int(raw_ts)) if raw_ts else datetime.now()
+
+        return {
+            "instrument_id":   token_map[token],
+            "timestamp":       timestamp,
+            "ltp":             ltp,
+            "ltq":             raw.get("last_traded_quantity"),
+            "open":            _paise_to_rupees(raw.get("open_price_of_the_day")),
+            "high":            _paise_to_rupees(raw.get("high_price_of_the_day")),
+            "low":             _paise_to_rupees(raw.get("low_price_of_the_day")),
+            "close":           _paise_to_rupees(raw.get("closed_price")),
+            "avg_trade_price": _paise_to_rupees(raw.get("average_trade_price")),
+            "volume":          raw.get("volume_trade_for_the_day"),
+            "total_buy_qty":   raw.get("total_buy_quantity"),
+            "total_sell_qty":  raw.get("total_sell_quantity"),
+            "open_interest":   raw.get("open_interest"),
+            "best_5_buy":      _parse_best5(raw.get("best_5_buy_data", [])),
+            "best_5_sell":     _parse_best5(raw.get("best_5_sell_data", [])),
+        }
+
+    except Exception as e:
+        print(f"  Error parsing tick: {e}")
+        return None
+
+
+# ── Database Insertion ─────────────────────────────────────────────────────────
+
+def save_ticks_to_db(conn, ticks: list) -> tuple[int, int]:
+    """
+    Batch insert tick records into tick_data table.
+    Returns (inserted_count, skipped_count).
+    """
+    if not ticks:
+        return 0, 0
+
+    inserted = 0
+    skipped = 0
+
+    with conn.cursor() as cur:
+        for tick in ticks:
+            try:
+                best_5_buy = tick.get("best_5_buy")
+                best_5_sell = tick.get("best_5_sell")
+
+                cur.execute("""
+                    INSERT INTO tick_data (
+                        instrument_id, timestamp, ltp, ltq,
+                        open, high, low, close,
+                        avg_trade_price, volume,
+                        total_buy_qty, total_sell_qty,
+                        open_interest, best_5_buy, best_5_sell
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (instrument_id, timestamp) DO NOTHING
+                """, (
+                    tick.get("instrument_id"),
+                    tick.get("timestamp"),
+                    tick.get("ltp"),
+                    tick.get("ltq"),
+                    tick.get("open"),
+                    tick.get("high"),
+                    tick.get("low"),
+                    tick.get("close"),
+                    tick.get("avg_trade_price"),
+                    tick.get("volume"),
+                    tick.get("total_buy_qty"),
+                    tick.get("total_sell_qty"),
+                    tick.get("open_interest"),
+                    json.dumps(best_5_buy) if best_5_buy else None,
+                    json.dumps(best_5_sell) if best_5_sell else None,
+                ))
+
+                if cur.rowcount == 1:
+                    inserted += 1
+                else:
+                    skipped += 1
+
+            except Exception as e:
+                print(f"  Error inserting tick: {e}")
+                conn.rollback()
+                continue
+
+    conn.commit()
+    return inserted, skipped
+
+
+# ── WebSocket Callbacks ────────────────────────────────────────────────────────
+
+def on_open(wsapp, sws, token_list: list, mode: int):
+    """Subscribe to instruments when WebSocket connection opens."""
+    print("WebSocket connection opened.")
+    sws.subscribe(CORRELATION_ID, mode, token_list)
+    total = sum(len(t["tokens"]) for t in token_list)
+    print(f"Subscribed to {total} instruments (SNAP_QUOTE mode).")
+
+
+def on_data(wsapp, message, tick_queue: Queue):
+    """Push incoming tick messages onto the queue."""
+    if isinstance(message, dict):
+        tick_queue.put(message)
+    elif isinstance(message, list):
+        for tick in message:
+            tick_queue.put(tick)
+
+
+def on_error(wsapp, error):
+    """Log WebSocket errors."""
+    print(f"WebSocket error: {error}")
+
+
+def on_close(wsapp, state: dict):
+    """Mark collector as stopped when WebSocket closes."""
+    print("WebSocket connection closed.")
+    state["running"] = False
+
+
+# ── DB Worker Thread ───────────────────────────────────────────────────────────
+
+def db_worker(conn, tick_queue: Queue, token_map: dict, state: dict):
+    """
+    Background thread: drains tick queue and batch-inserts into DB.
+    Runs until state["running"] is False and queue is empty.
+    """
+    tick_buffer = []
+
+    while state["running"] or not tick_queue.empty():
+        try:
+            raw = tick_queue.get(timeout=1)
+            parsed = parse_tick(raw, token_map)
+            if parsed:
+                tick_buffer.append(parsed)
+
+            if len(tick_buffer) >= BATCH_SIZE:
+                inserted, skipped = save_ticks_to_db(conn, tick_buffer)
+                state["total_inserted"] += inserted
+                state["total_skipped"] += skipped
+                print(
+                    f"  Batch inserted: {inserted} | "
+                    f"Skipped: {skipped} | "
+                    f"Total: {state['total_inserted']}"
+                )
+                tick_buffer = []
+
+        except Empty:
+            # Flush partial buffer on timeout
+            if tick_buffer:
+                inserted, skipped = save_ticks_to_db(conn, tick_buffer)
+                state["total_inserted"] += inserted
+                state["total_skipped"] += skipped
+                tick_buffer = []
+            continue
+
+        except Exception as e:
+            print(f"  DB worker error: {e}")
+            continue
+
+    # Final flush on shutdown
+    if tick_buffer:
+        inserted, skipped = save_ticks_to_db(conn, tick_buffer)
+        state["total_inserted"] += inserted
+        state["total_skipped"] += skipped
+        print(f"  Final flush: {inserted} inserted, {skipped} skipped.")
+
+
+# ── Main Collection Function ───────────────────────────────────────────────────
+
+def start_realtime_tick_collection(
+    instrument_types: list[str],
+    mode: int = MODE_SNAP_QUOTE,
+    limit: int = None,
+):
+    """
+    Start real-time tick data collection for specified instrument types.
+
+    Args:
+        instrument_types: e.g. ["AMXIDX", "FUTIDX", "OPTIDX"]
+        mode: 1=LTP, 2=Quote, 3=SnapQuote (default — maximum data)
+        limit: Cap on instruments. Angel One allows max 1000 per WebSocket session.
+    """
+    # Step 1: Authenticate
+    session = authenticate()
+    if not session:
+        return
+
+    manager = ConnectionManager()
+    conn = manager.get_connection()
+
+    try:
+        # Step 2: Ensure tick_data table exists
+        create_tick_table_if_not_exists(conn)
+
+        # Step 3: Fetch instruments
+        instruments = get_instruments(conn, instrument_types, limit=limit)
+        if not instruments:
+            print(f"No instruments found for types: {instrument_types}")
+            return
+
+        # Step 4: Enforce 1000 token limit
+        if len(instruments) > 1000:
+            print(
+                f"Warning: {len(instruments)} instruments exceed the 1000 token "
+                f"WebSocket limit. Truncating to 1000."
+            )
+            instruments = instruments[:1000]
+
+        print(f"\nSubscribing to {len(instruments)} instruments:")
+        for inst in instruments[:10]:
+            print(f"  {inst[1]} ({inst[4]}) — Token: {inst[2]}")
+        if len(instruments) > 10:
+            print(f"  ... and {len(instruments) - 10} more")
+
+    finally:
+        conn.close()
+
+    # Step 5: Build lookup structures
+    token_list = build_token_list(instruments)
+    token_map = build_token_map(instruments)
+
+    # Step 6: Shared state dict — replaces class instance variables
+    state = {
+        "running":        True,
+        "total_inserted": 0,
+        "total_skipped":  0,
+    }
+    tick_queue = Queue()
+
+    # Step 7: Start DB worker thread
+    db_conn = manager.get_connection()
+    worker_thread = threading.Thread(
+        target=db_worker,
+        args=(db_conn, tick_queue, token_map, state),
+        daemon=True,
+    )
+    worker_thread.start()
+
+    # Step 8: Set up SmartWebSocketV2 with functional callbacks
+    sws = SmartWebSocketV2(
+        session["auth_token"],
+        API_KEY,
+        CLIENT_ID,
+        session["feed_token"],
+    )
+    sws.on_open = lambda wsapp: on_open(wsapp, sws, token_list, mode)
+    sws.on_data = lambda wsapp, message: on_data(wsapp, message, tick_queue)
+    sws.on_error = on_error
+    sws.on_close = lambda wsapp: on_close(wsapp, state)
+
+    # Step 9: Run WebSocket in background thread
+    ws_thread = threading.Thread(target=sws.connect, daemon=True)
+    ws_thread.start()
+
+    print("\nTick collection running. Press Ctrl+C to stop.\n")
+
+    # Step 10: Keep main thread alive, handle Ctrl+C gracefully
+    try:
+        while state["running"]:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nStopping tick collection...")
+        state["running"] = False
+
+        try:
+            sws.close_connection()
+        except Exception:
+            pass
+
+        worker_thread.join(timeout=10)
+        db_conn.close()
+
+        print(f"\nCollection stopped.")
+        print(f"Total inserted : {state['total_inserted']}")
+        print(f"Total skipped  : {state['total_skipped']}")
+
+
+# ── Query Functions ────────────────────────────────────────────────────────────
+
+def get_latest_tick(conn, symbol: str) -> dict | None:
+    """Get the most recent tick for a given symbol."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT t.timestamp, t.ltp, t.ltq,
+                       t.open, t.high, t.low, t.close,
+                       t.avg_trade_price, t.volume,
+                       t.total_buy_qty, t.total_sell_qty,
+                       t.open_interest, t.best_5_buy, t.best_5_sell
+                FROM tick_data t
+                JOIN instruments i ON i.id = t.instrument_id
+                WHERE i.symbol = %s
+                ORDER BY t.timestamp DESC
+                LIMIT 1
+            """, (symbol.upper(),))
+            row = cur.fetchone()
+
+        if not row:
+            return None
+
+        return {
+            "timestamp":       row[0],
+            "ltp":             float(row[1]),
+            "ltq":             row[2],
+            "open":            float(row[3]) if row[3] else None,
+            "high":            float(row[4]) if row[4] else None,
+            "low":             float(row[5]) if row[5] else None,
+            "close":           float(row[6]) if row[6] else None,
+            "avg_trade_price": float(row[7]) if row[7] else None,
+            "volume":          row[8],
+            "total_buy_qty":   row[9],
+            "total_sell_qty":  row[10],
+            "open_interest":   row[11],
+            "best_5_buy":      row[12],
+            "best_5_sell":     row[13],
+        }
+
+    except Exception as e:
+        print(f"Error fetching latest tick: {e}")
+        return None
+
+
+def get_tick_data_range(
+    conn,
+    symbol: str,
+    from_date: datetime = None,
+    to_date: datetime = None,
+    limit: int = 1000,
+) -> list:
+    """Get tick data for a symbol within a date range."""
+    try:
+        if not to_date:
+            to_date = datetime.now()
+        if not from_date:
+            from_date = to_date - timedelta(days=1)
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT t.timestamp, t.ltp, t.ltq,
+                       t.open, t.high, t.low, t.close,
+                       t.avg_trade_price, t.volume,
+                       t.total_buy_qty, t.total_sell_qty,
+                       t.open_interest
+                FROM tick_data t
+                JOIN instruments i ON i.id = t.instrument_id
+                WHERE i.symbol = %s
+                  AND t.timestamp >= %s
+                  AND t.timestamp <= %s
+                ORDER BY t.timestamp ASC
+                LIMIT %s
+            """, (symbol.upper(), from_date, to_date, limit))
+            rows = cur.fetchall()
+
+        return [
+            {
+                "timestamp":       row[0],
+                "ltp":             float(row[1]),
+                "ltq":             row[2],
+                "open":            float(row[3]) if row[3] else None,
+                "high":            float(row[4]) if row[4] else None,
+                "low":             float(row[5]) if row[5] else None,
+                "close":           float(row[6]) if row[6] else None,
+                "avg_trade_price": float(row[7]) if row[7] else None,
+                "volume":          row[8],
+                "total_buy_qty":   row[9],
+                "total_sell_qty":  row[10],
+                "open_interest":   row[11],
+            }
+            for row in rows
+        ]
+
+    except Exception as e:
+        print(f"Error fetching tick data range: {e}")
+        return []
+
+
+if __name__ == "__main__":
+    print("Starting Real-Time Tick Data Collection (SNAP_QUOTE — maximum data)...\n")
+
+    # Start with index + futures for testing
+    start_realtime_tick_collection(
+        instrument_types=["AMXIDX", "FUTIDX"],
+        mode=MODE_SNAP_QUOTE,
+    )
+
+    # To include options (respect 1000 token limit):
+    # start_realtime_tick_collection(
+    #     instrument_types=["AMXIDX", "FUTIDX", "OPTIDX"],
+    #     mode=MODE_SNAP_QUOTE,
+    #     limit=1000,
+    # )

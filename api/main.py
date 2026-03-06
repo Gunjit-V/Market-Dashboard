@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import health, instruments, ohlcv, download
+from api.routes import health, instruments, ohlcv, ticks, download
 
 app = FastAPI(
     title="Indian Stock Market API",
@@ -19,8 +19,10 @@ app.add_middleware(
 
 # Register routers
 app.include_router(health.router, prefix="/health", tags=["Health"])
-app.include_router(instruments.router, prefix="/instruments", tags=["Instruments"])
+app.include_router(instruments.router,
+                   prefix="/instruments", tags=["Instruments"])
 app.include_router(ohlcv.router, prefix="/ohlcv", tags=["OHLCV"])
+app.include_router(ticks.router, prefix="/ticks", tags=["Ticks"])
 app.include_router(download.router, prefix="/download", tags=["Download"])
 
 
