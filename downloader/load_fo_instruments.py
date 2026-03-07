@@ -4,7 +4,7 @@ import pyotp
 from datetime import datetime
 from SmartApi import SmartConnect
 from dotenv import load_dotenv
-from connection import ConnectionManager
+from db.connection import ConnectionManager
 
 load_dotenv()
 

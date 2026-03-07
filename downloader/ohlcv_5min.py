@@ -15,7 +15,7 @@ TOTP_TOKEN = os.getenv("ANGEL_TOTP_TOKEN")
 
 CHUNK_DAYS = 5
 API_DELAY = 2.0  # Increased delay to avoid rate limiting
-DEFAULT_DAYS = 365
+DEFAULT_DAYS = 30
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 2.0  # Start with 2 second backoff
 
@@ -365,6 +365,6 @@ def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DA
 
 if __name__ == "__main__":
     download_historical_data(
-        instrument_types=["AMXIDX", "FUTIDX"],
+        instrument_types=["AMXIDX", "FUTIDX", "OPTIDX"],
         days=DEFAULT_DAYS
     )
