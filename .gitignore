@@ -21,12 +21,15 @@ frontend/dist/
 # IDE
 .idea/
 .vscode/
+.cursor
 
 # Data files
+data/
 instrument_master.csv
 nse_equities.csv
 
 # Logs
+logs/
 *.log
 
 # Jupyter Notebooks

@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import math
 import threading
 from datetime import datetime, timedelta
 from queue import Queue, Empty
@@ -8,6 +9,7 @@ from dotenv import load_dotenv
 import pyotp
 from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
+from SmartApi.smartExceptions import DataException
 from db.connection import ConnectionManager
 
 load_dotenv()
@@ -35,6 +37,22 @@ EXCHANGE_TYPE = {
 }
 
 CORRELATION_ID = "tick_session_1"
+
+# Spot token / strike config per index
+INDEX_CONFIG = {
+    "NIFTY": {
+        "spot_token":  "99926000",
+        "spot_symbol": "Nifty 50",
+        "spot_exchange": "NSE",
+        "strike_step": 50,
+    },
+    "BANKNIFTY": {
+        "spot_token":  "99926009",
+        "spot_symbol": "Nifty Bank",
+        "spot_exchange": "NSE",
+        "strike_step": 100,
+    },
+}
 
 
 # ── Authentication ─────────────────────────────────────────────────────────────
@@ -115,6 +133,85 @@ def create_tick_table_if_not_exists(conn):
     except Exception as e:
         print(f"Error creating tick_data table: {e}")
         conn.rollback()
+
+
+# ── Spot Price / ATM Helpers ───────────────────────────────────────────────────
+
+def get_spot_price(smart_api, index_name: str) -> float | None:
+    """
+    Fetch the current spot price for an index using the Angel One REST API.
+    Returns the LTP in rupees, or None on failure.
+    """
+    cfg = INDEX_CONFIG.get(index_name)
+    if not cfg:
+        print(
+            f"Unknown index '{index_name}'. Supported: {list(INDEX_CONFIG.keys())}")
+        return None
+
+    try:
+        response = smart_api.ltpData(
+            cfg["spot_exchange"], cfg["spot_symbol"], cfg["spot_token"]
+        )
+        if response and response.get("status"):
+            ltp = float(response["data"]["ltp"])
+            print(f"Current {index_name} spot price: {ltp}")
+            return ltp
+        else:
+            print(f"Failed to fetch {index_name} spot price: {response}")
+            return None
+    except Exception as e:
+        print(f"Error fetching {index_name} spot price: {e}")
+        return None
+
+
+def get_atm_strike(spot_price: float, strike_step: int) -> float:
+    """Round spot price to the nearest strike multiple."""
+    return round(spot_price / strike_step) * strike_step
+
+
+def get_option_instruments(
+    conn,
+    index_name: str,
+    atm_strike: float,
+    strike_step: int,
+    num_strikes: int = 5,
+) -> list:
+    """
+    Fetch ATM ± num_strikes option instruments (both CE and PE) for the
+    nearest expiry from the instruments table.
+
+    Returns list of (id, symbol, token, exchange, instrument_type, expiry).
+    """
+    lower_strike = atm_strike - (num_strikes * strike_step)
+    upper_strike = atm_strike + (num_strikes * strike_step)
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, symbol, token, exchange, instrument_type, expiry
+            FROM instruments
+            WHERE instrument_type = 'OPTIDX'
+              AND name = %s
+              AND expiry = (
+                  SELECT MIN(expiry) FROM instruments
+                  WHERE instrument_type = 'OPTIDX'
+                    AND name = %s
+                    AND expiry >= CURRENT_DATE
+              )
+              AND strike >= %s
+              AND strike <= %s
+            ORDER BY strike ASC, symbol ASC
+        """, (index_name, index_name, lower_strike, upper_strike))
+        rows = cur.fetchall()
+
+    ce = [r for r in rows if "CE" in r[1]]
+    pe = [r for r in rows if "PE" in r[1]]
+    print(
+        f"Options found: {len(rows)} total "
+        f"({len(ce)} CE + {len(pe)} PE), "
+        f"strikes {lower_strike}–{upper_strike}, "
+        f"expiry {rows[0][5] if rows else 'N/A'}"
+    )
+    return rows
 
 
 # ── Instrument Fetching ────────────────────────────────────────────────────────
@@ -319,6 +416,9 @@ def save_ticks_to_db(conn, ticks: list) -> tuple[int, int]:
                 conn.rollback()
                 continue
 
+        if inserted > 0:
+            cur.execute("NOTIFY tick_update;")
+
     conn.commit()
     return inserted, skipped
 
@@ -407,14 +507,20 @@ def start_realtime_tick_collection(
     instrument_types: list[str],
     mode: int = MODE_SNAP_QUOTE,
     limit: int = None,
+    subscribe_options: bool = False,
+    index_name: str = "NIFTY",
+    num_strikes: int = 5,
 ):
     """
     Start real-time tick data collection for specified instrument types.
 
     Args:
-        instrument_types: e.g. ["AMXIDX", "FUTIDX", "OPTIDX"]
+        instrument_types: e.g. ["AMXIDX", "FUTIDX"]
         mode: 1=LTP, 2=Quote, 3=SnapQuote (default — maximum data)
         limit: Cap on instruments. Angel One allows max 1000 per WebSocket session.
+        subscribe_options: If True, also subscribe to ATM ± num_strikes options.
+        index_name: Index to derive ATM from ("NIFTY" or "BANKNIFTY").
+        num_strikes: Number of strikes above and below ATM to subscribe.
     """
     # Step 1: Authenticate
     session = authenticate()
@@ -428,13 +534,42 @@ def start_realtime_tick_collection(
         # Step 2: Ensure tick_data table exists
         create_tick_table_if_not_exists(conn)
 
-        # Step 3: Fetch instruments
+        # Step 3: Fetch base instruments (index, futures, etc.)
         instruments = get_instruments(conn, instrument_types, limit=limit)
         if not instruments:
             print(f"No instruments found for types: {instrument_types}")
             return
 
-        # Step 4: Enforce 1000 token limit
+        # Step 4: Optionally add ATM ± N option instruments
+        if subscribe_options:
+            cfg = INDEX_CONFIG.get(index_name)
+            if not cfg:
+                print(f"Unknown index '{index_name}'. Skipping options.")
+            else:
+                # Get spot price via REST API
+                smart_api = SmartConnect(API_KEY)
+                totp = pyotp.TOTP(TOTP_TOKEN).now()
+                smart_api.generateSession(CLIENT_ID, PASSWORD, totp)
+
+                spot_price = get_spot_price(smart_api, index_name)
+                if spot_price:
+                    atm = get_atm_strike(spot_price, cfg["strike_step"])
+                    print(f"ATM strike: {atm}")
+
+                    opt_instruments = get_option_instruments(
+                        conn, index_name, atm, cfg["strike_step"], num_strikes
+                    )
+                    if opt_instruments:
+                        instruments = list(instruments) + list(opt_instruments)
+                    else:
+                        print(
+                            f"Warning: No OPTIDX instruments found for {index_name}. "
+                            f"Run load_fo_instruments.py first."
+                        )
+                else:
+                    print("Could not determine spot price. Skipping options.")
+
+        # Step 5: Enforce 1000 token limit
         if len(instruments) > 1000:
             print(
                 f"Warning: {len(instruments)} instruments exceed the 1000 token "
@@ -613,15 +748,20 @@ def get_tick_data_range(
 if __name__ == "__main__":
     print("Starting Real-Time Tick Data Collection (SNAP_QUOTE — maximum data)...\n")
 
-    # Start with index + futures for testing
+    # Index + Futures + ATM ± 5 Options (CE + PE)
     start_realtime_tick_collection(
         instrument_types=["AMXIDX", "FUTIDX"],
         mode=MODE_SNAP_QUOTE,
+        subscribe_options=True,
+        index_name="NIFTY",
+        num_strikes=5,
     )
 
-    # To include options (respect 1000 token limit):
+    # For BANKNIFTY options (strikes in multiples of 100):
     # start_realtime_tick_collection(
-    #     instrument_types=["AMXIDX", "FUTIDX", "OPTIDX"],
+    #     instrument_types=["AMXIDX", "FUTIDX"],
     #     mode=MODE_SNAP_QUOTE,
-    #     limit=1000,
+    #     subscribe_options=True,
+    #     index_name="BANKNIFTY",
+    #     num_strikes=5,
     # )

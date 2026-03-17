@@ -64,70 +64,52 @@ export interface DownloadStatusData {
   latest_run_at?: string
   latest_run_status?: string
   download_counts_by_status?: Record<string, number>
+  instruments_by_type?: Record<string, number>
+  candles_by_type?: Record<string, number>
+  instruments_with_no_data?: number
 }
 
-// ── Volatility types — add these to your existing types.ts ──────────────────
+// ─── Volatility API types ────────────────────────────────────────────────────
 
-export type RVMethod = 'close_close' | 'parkinson' | 'garman_klass' | 'rogers_satchell'
-
-export type RVWindow = 5 | 10 | 20
-
-export interface RVPoint {
-  timestamp: string   // ISO string, end of rolling window
-  rv: number          // annualised RV as a decimal (e.g. 0.142 = 14.2%)
-  method: RVMethod
-  window_days: number
-  candle_count: number
+export interface ATMInfo {
+  underlying: number
+  futures_symbol: string
+  atm_strike: number
+  expiries: string[]
+  strikes: number[]
 }
 
-export interface IVPoint {
+export interface IVChainRow {
+  strike: number
+  ce_iv: number | null
+  pe_iv: number | null
+  ce_close: number | null
+  pe_close: number | null
+  ce_volume: number | null
+  pe_volume: number | null
+  ce_symbol: string | null
+  pe_symbol: string | null
+}
+
+export interface IVChainData {
+  underlying: number
+  expiry: string
+  time_to_expiry_years: number
+  chain: IVChainRow[]
+}
+
+export interface IVHistoryPoint {
   timestamp: string
+  iv_pct: number
+  option_close: number
+  underlying: number
+}
+
+export interface IVHistoryData {
+  symbol: string
   strike: number
   expiry: string
-  option_type: 'CE' | 'PE'
-  iv: number           // annualised IV as decimal
-  delta: number
-  underlying_price: number
+  option_type: string
+  series: IVHistoryPoint[]
 }
 
-export interface IVSurface {
-  timestamp: string
-  atm_iv: number
-  skew: number         // OTM put IV − ATM IV
-  term_structure: {
-    expiry: string
-    dte: number
-    atm_iv: number
-  }[]
-}
-
-// What the /volatility/rv endpoint should return
-export interface RVResponse {
-  symbol: string
-  method: RVMethod
-  window_days: number
-  current_rv: number
-  history: RVPoint[]
-  candles_used: number
-  from_date: string
-  to_date: string
-}
-
-// What the /volatility/iv endpoint should return (once options data is live)
-export interface IVResponse {
-  symbol: string           // underlying, e.g. "NIFTY"
-  timestamp: string
-  atm_iv: number
-  iv_rank: number | null   // 0–100, null if < 52 weeks of history
-  iv_percentile: number | null
-  pcr: number | null
-  max_pain: number | null
-  history: IVPoint[]
-}
-
-export interface VolatilityComparison {
-  timestamp: string
-  rv: number
-  iv: number | null
-  vrp: number | null       // iv − rv  (Volatility Risk Premium)
-}

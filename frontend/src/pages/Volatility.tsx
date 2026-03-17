@@ -17,76 +17,124 @@
  *   { to: '/volatility', label: 'Volatility' }
  */
 
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from "react";
 import {
-  LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  CartesianGrid, Legend, ReferenceLine,
-} from 'recharts'
-import { api } from '../api/client'
-import type { OHLCVCandle, Instrument } from '../api/types'
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ResponsiveContainer,
+  CartesianGrid,
+  Legend,
+  ReferenceLine,
+} from "recharts";
+import { api } from "../api/client";
+import type { OHLCVCandle, Instrument } from "../api/types";
 import {
-  rollingRV, currentRV, allMethodsRV,
-  fmtPct, rvLabel, rvDescription,
+  rollingRV,
+  currentRV,
+  allMethodsRV,
+  fmtPct,
+  rvLabel,
+  rvDescription,
   type RVMethod,
-} from '../utils/rv'
-import './Volatility.css'
+} from "../utils/rv";
+import "./Volatility.css";
 
 // ── Types local to this page ─────────────────────────────────────────────────
 
-type RVWindow = 5 | 10 | 20
+type RVWindow = 5 | 10 | 20;
 
-const RV_METHODS: RVMethod[] = ['close_close', 'parkinson', 'garman_klass', 'rogers_satchell']
-const RV_WINDOWS: RVWindow[] = [5, 10, 20]
+const RV_METHODS: RVMethod[] = [
+  "close_close",
+  "parkinson",
+  "garman_klass",
+  "rogers_satchell",
+];
+const RV_WINDOWS: RVWindow[] = [5, 10, 20];
+
+type InstType = "FUTIDX" | "OPTIDX" | "OPTSTK";
+const INST_TYPES: { value: InstType; label: string }[] = [
+  { value: "FUTIDX", label: "Futures" },
+  { value: "OPTIDX", label: "Options IDX" },
+  { value: "OPTSTK", label: "Options STK" },
+];
+
+function optionTypeBadge(sym: string): "CE" | "PE" | null {
+  if (sym.endsWith("CE") || sym.includes("CE")) return "CE";
+  if (sym.endsWith("PE") || sym.includes("PE")) return "PE";
+  return null;
+}
+
+function formatOptionLabel(inst: Instrument): string {
+  const parts = [inst.symbol];
+  if (inst.strike != null) parts.push(`₹${inst.strike}`);
+  const ot = optionTypeBadge(inst.symbol);
+  if (ot) parts.push(ot);
+  if (inst.expiry) {
+    const d = new Date(inst.expiry);
+    parts.push(d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "2-digit" }));
+  }
+  return parts.join(" · ");
+}
 
 // Placeholder spot price — replace with live tick feed when available
-const PLACEHOLDER_SPOT = 24832.0
+const PLACEHOLDER_SPOT = 24832.0;
 
 // IV placeholder — remove once options_collector.py is running
-const IV_PLACEHOLDER = null as null  // will be: { atm_iv: 0.142, pcr: 1.1, ... }
+const IV_PLACEHOLDER = null as null; // will be: { atm_iv: 0.142, pcr: 1.1, ... }
 
 // ── Colour tokens (mirror your index.css) ───────────────────────────────────
 const C = {
-  bg:         '#0b0f14',
-  card:       '#111820',
-  border:     '#1e2936',
-  text:       '#e2e8f0',
-  muted:      '#94a3b8',
-  accent:     '#22c55e',
-  accentDim:  '#16a34a',
-  warn:       '#eab308',
-  error:      '#ef4444',
-  blue:       '#3b82f6',
-  purple:     '#a855f7',
-}
+  bg: "#0b0f14",
+  card: "#111820",
+  border: "#1e2936",
+  text: "#e2e8f0",
+  muted: "#94a3b8",
+  accent: "#22c55e",
+  accentDim: "#16a34a",
+  warn: "#eab308",
+  error: "#ef4444",
+  blue: "#3b82f6",
+  purple: "#a855f7",
+};
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
 interface StatCardProps {
-  label: string
-  value: string
-  sub?: string
-  color?: string
-  badge?: { text: string; kind: 'success' | 'warn' | 'error' | 'info' }
-  loading?: boolean
+  label: string;
+  value: string;
+  sub?: string;
+  color?: string;
+  badge?: { text: string; kind: "success" | "warn" | "error" | "info" };
+  loading?: boolean;
 }
 
 function StatCard({ label, value, sub, color, badge, loading }: StatCardProps) {
   return (
     <div className="card vol-stat-card">
       <div className="vol-stat-label">{label}</div>
-      {loading
-        ? <div className="vol-stat-skeleton" />
-        : <div className="vol-stat-value mono" style={{ color: color ?? C.text }}>{value}</div>
-      }
+      {loading ? (
+        <div className="vol-stat-skeleton" />
+      ) : (
+        <div className="vol-stat-value mono" style={{ color: color ?? C.text }}>
+          {value}
+        </div>
+      )}
       {sub && <div className="vol-stat-sub mono">{sub}</div>}
-      {badge && <span className={`badge badge-${badge.kind} vol-stat-badge`}>{badge.text}</span>}
+      {badge && (
+        <span className={`badge badge-${badge.kind} vol-stat-badge`}>
+          {badge.text}
+        </span>
+      )}
     </div>
-  )
+  );
 }
 
 interface SectionHeadProps {
-  title: string
-  sub?: string
+  title: string;
+  sub?: string;
 }
 function SectionHead({ title, sub }: SectionHeadProps) {
   return (
@@ -94,25 +142,33 @@ function SectionHead({ title, sub }: SectionHeadProps) {
       <h2 className="vol-section-title">{title}</h2>
       {sub && <span className="vol-section-sub">{sub}</span>}
     </div>
-  )
+  );
 }
 
 // ── Custom tooltip for recharts ───────────────────────────────────────────────
-function RVTooltip({ active, payload, label }: {
-  active?: boolean; payload?: { name: string; value: number; color: string }[]; label?: string
+function RVTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean;
+  payload?: { name: string; value: number; color: string }[];
+  label?: string;
 }) {
-  if (!active || !payload?.length) return null
+  if (!active || !payload?.length) return null;
   return (
     <div className="vol-tooltip">
-      <div className="vol-tooltip-ts">{label ? new Date(label).toLocaleString() : ''}</div>
+      <div className="vol-tooltip-ts">
+        {label ? new Date(label).toLocaleString() : ""}
+      </div>
       {payload.map((p) => (
         <div key={p.name} className="vol-tooltip-row">
           <span style={{ color: p.color }}>{p.name}</span>
-          <span className="mono">{(p.value).toFixed(2)}%</span>
+          <span className="mono">{p.value.toFixed(2)}%</span>
         </div>
       ))}
     </div>
-  )
+  );
 }
 
 // ── IV Placeholder Panel ──────────────────────────────────────────────────────
@@ -120,19 +176,21 @@ function IVPlaceholderPanel() {
   return (
     <div className="card vol-iv-placeholder">
       <div className="vol-iv-placeholder-icon">⌛</div>
-      <div className="vol-iv-placeholder-title">Options data not yet available</div>
+      <div className="vol-iv-placeholder-title">
+        Options data not yet available
+      </div>
       <p className="vol-iv-placeholder-body">
-        Implied Volatility requires live option chain snapshots from{' '}
+        Implied Volatility requires live option chain snapshots from{" "}
         <code>options_collector.py</code>. Once it has run for at least one
         market session, IV will appear here automatically.
       </p>
       <div className="vol-iv-placeholder-checklist">
         {[
-          ['✓', C.accent,  'Options collector code built'],
-          ['✓', C.accent,  'Schema ready (option_chain_snapshot)'],
-          ['✓', C.accent,  'IV / Greeks computation implemented'],
-          ['○', C.muted,   'Run options_collector.py for ≥1 session'],
-          ['○', C.muted,   'Accumulate 10–15 days for baselines'],
+          ["✓", C.accent, "Options collector code built"],
+          ["✓", C.accent, "Schema ready (option_chain_snapshot)"],
+          ["✓", C.accent, "IV / Greeks computation implemented"],
+          ["○", C.muted, "Run options_collector.py for ≥1 session"],
+          ["○", C.muted, "Accumulate 10–15 days for baselines"],
         ].map(([icon, color, text], i) => (
           <div key={i} className="vol-iv-checklist-row">
             <span style={{ color: color as string }}>{icon}</span>
@@ -141,84 +199,131 @@ function IVPlaceholderPanel() {
         ))}
       </div>
     </div>
-  )
+  );
+}
+
+// ── Build multi-method chart series ──────────────────────────────────────────
+
+function buildMultiMethodSeries(
+  candles: OHLCVCandle[],
+  windowDays: number
+): Record<string, string | number>[] {
+  const series: Record<string, Record<string, number>> = {};
+
+  for (const m of RV_METHODS) {
+    const rolling = rollingRV(candles, m, windowDays);
+    for (const pt of rolling) {
+      const ts = new Date(pt.timestamp).toLocaleDateString("en-IN", {
+        month: "short",
+        day: "numeric",
+      });
+      if (!series[ts]) series[ts] = {};
+      series[ts][rvLabel(m)] = pt.rv_pct;
+    }
+  }
+
+  return Object.entries(series).map(([ts, values]) => ({
+    ts,
+    ...values,
+  }));
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function Volatility() {
   // Controls
-  const [symbol, setSymbol]       = useState('NIFTY30MAR26FUT')
-  const [inputSymbol, setInput]   = useState('NIFTY30MAR26FUT')
-  const [window_, setWindow]      = useState<RVWindow>(10)
-  const [method, setMethod]       = useState<RVMethod>('garman_klass')
-  const [showAll, setShowAll]     = useState(false)   // overlay all 4 methods on chart
-  const [instruments, setInstruments] = useState<Instrument[]>([])
+  const [instType, setInstType] = useState<InstType>("FUTIDX");
+  const [symbol, setSymbol] = useState("NIFTY30MAR26FUT");
+  const [inputSymbol, setInput] = useState("NIFTY30MAR26FUT");
+  const [window_, setWindow] = useState<RVWindow>(10);
+  const [method, setMethod] = useState<RVMethod>("garman_klass");
+  const [showAll, setShowAll] = useState(false); // overlay all 4 methods on chart
+  const [instruments, setInstruments] = useState<Instrument[]>([]);
+
+  // Derived: currently selected instrument object (for metadata display)
+  const selectedInstrument = instruments.find((i) => i.symbol === symbol) ?? null;
+  const isOption = instType === "OPTIDX" || instType === "OPTSTK";
 
   // Data
-  const [candles, setCandles]     = useState<OHLCVCandle[]>([])
-  const [loading, setLoading]     = useState(false)
-  const [error, setError]         = useState<string | null>(null)
-  const [spot, setSpot]           = useState<number>(PLACEHOLDER_SPOT)
+  const [candles, setCandles] = useState<OHLCVCandle[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [spot, setSpot] = useState<number>(PLACEHOLDER_SPOT);
 
-  // Load instruments list for the selector
+  // Load instruments list for the selector (re-fetches when type changes)
   useEffect(() => {
-    api.instruments({ instrument_type: 'FUTIDX', page_size: 50 })
-      .then(r => setInstruments(r.data ?? []))
-      .catch(() => {})
-  }, [])
+    api
+      .instruments({ instrument_type: instType, page_size: isOption ? 200 : 50 })
+      .then((r) => {
+        const list = r.data ?? [];
+        setInstruments(list);
+        // Auto-select first instrument when type changes
+        if (list.length > 0) {
+          setSymbol(list[0].symbol);
+          setInput(list[0].symbol);
+        }
+      })
+      .catch(() => { });
+  }, [instType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load candles for the selected symbol
   const loadCandles = useCallback(() => {
-    if (!symbol) return
-    setLoading(true)
-    setError(null)
+    if (!symbol) return;
+    setLoading(true);
+    setError(null);
     // Fetch last ~30 days of 5-min candles (page_size 2250 = 30 × 75 candles)
-    api.ohlcv(symbol, { page_size: 2250 })
-      .then(r => {
-        const data = r.data ?? []
-        setCandles(data)
-        if (data.length > 0) setSpot(data[data.length - 1].close)
+    api
+      .ohlcv(symbol, { page_size: 2250 })
+      .then((r) => {
+        const data = r.data ?? [];
+        setCandles(data);
+        if (data.length > 0) setSpot(data[data.length - 1].close);
       })
-      .catch(e => setError(e instanceof Error ? e.message : 'Failed to load'))
-      .finally(() => setLoading(false))
-  }, [symbol])
+      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load"))
+      .finally(() => setLoading(false));
+  }, [symbol]);
 
-  useEffect(() => { loadCandles() }, [loadCandles])
+  useEffect(() => {
+    loadCandles();
+  }, [loadCandles]);
 
   // ── Computed values ─────────────────────────────────────────────────────
 
-  const rvCurrent = currentRV(candles, method, window_)
-  const rvHistory = rollingRV(candles, method, window_)
-  const allRV     = allMethodsRV(candles, window_)
+  const rvCurrent = currentRV(candles, method, window_);
+  const rvHistory = rollingRV(candles, method, window_);
+  const allRV = allMethodsRV(candles, window_);
 
   // Build chart series — either one method or all four overlaid
   const chartData = showAll
     ? buildMultiMethodSeries(candles, window_)
-    : rvHistory.map(p => ({
-        ts: new Date(p.timestamp).toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
-        [rvLabel(method)]: p.rv_pct,
-      }))
+    : rvHistory.map((p) => ({
+      ts: new Date(p.timestamp).toLocaleDateString("en-IN", {
+        month: "short",
+        day: "numeric",
+      }),
+      [rvLabel(method)]: p.rv_pct,
+    }));
 
-  const vrp = IV_PLACEHOLDER != null && rvCurrent != null
-    ? (IV_PLACEHOLDER as number) - rvCurrent
-    : null
+  const vrp =
+    IV_PLACEHOLDER != null && rvCurrent != null
+      ? (IV_PLACEHOLDER as number) - rvCurrent
+      : null;
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   const rvColor = (rv: number | null) => {
-    if (rv == null) return C.muted
-    if (rv < 0.10) return C.accent
-    if (rv < 0.20) return C.warn
-    return C.error
-  }
+    if (rv == null) return C.muted;
+    if (rv < 0.1) return C.accent;
+    if (rv < 0.2) return C.warn;
+    return C.error;
+  };
 
   const rvRegime = (rv: number | null): string => {
-    if (rv == null) return '—'
-    if (rv < 0.10) return 'Low'
-    if (rv < 0.15) return 'Normal'
-    if (rv < 0.25) return 'Elevated'
-    return 'High'
-  }
+    if (rv == null) return "—";
+    if (rv < 0.1) return "Low";
+    if (rv < 0.15) return "Normal";
+    if (rv < 0.25) return "Elevated";
+    return "High";
+  };
 
   // ── Render ───────────────────────────────────────────────────────────────
 
@@ -235,8 +340,11 @@ export default function Volatility() {
         <div className="vol-header-badge">
           <span style={{ color: C.warn }}>◆</span>
           <span style={{ color: C.muted }}>Spot (placeholder)</span>
-          <span className="mono" style={{ color: C.text, fontSize: '1.1rem', fontWeight: 700 }}>
-            {spot.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+          <span
+            className="mono"
+            style={{ color: C.text, fontSize: "1.1rem", fontWeight: 700 }}
+          >
+            {spot.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
           </span>
         </div>
       </div>
@@ -244,47 +352,66 @@ export default function Volatility() {
       {/* ── Controls ── */}
       <div className="card vol-controls">
         <div className="vol-controls-row">
+          {/* Instrument type selector */}
+          <div className="vol-control-group">
+            <label className="vol-control-label">Instrument Type</label>
+            <div className="vol-pill-group">
+              {INST_TYPES.map((t) => (
+                <button
+                  key={t.value}
+                  className={`vol-pill ${instType === t.value ? "vol-pill-active" : ""}`}
+                  onClick={() => setInstType(t.value)}
+                >
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Symbol selector */}
           <div className="vol-control-group">
             <label className="vol-control-label">Symbol</label>
-            {instruments.length > 0
-              ? (
-                <select
-                  className="input vol-select"
-                  value={symbol}
-                  onChange={e => setSymbol(e.target.value)}
+            {instruments.length > 0 ? (
+              <select
+                className="input vol-select"
+                value={symbol}
+                onChange={(e) => setSymbol(e.target.value)}
+                style={{ minWidth: isOption ? 320 : 200 }}
+              >
+                {instruments.map((i) => (
+                  <option key={i.id} value={i.symbol}>
+                    {isOption ? formatOptionLabel(i) : i.symbol}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <input
+                  className="input"
+                  value={inputSymbol}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && setSymbol(inputSymbol)}
+                  placeholder={isOption ? "e.g. NIFTY30MAR2624800CE" : "e.g. NIFTY30MAR26FUT"}
+                  style={{ width: isOption ? 280 : 200 }}
+                />
+                <button
+                  className="btn btn-primary"
+                  onClick={() => setSymbol(inputSymbol)}
                 >
-                  {instruments.map(i => (
-                    <option key={i.id} value={i.symbol}>{i.symbol}</option>
-                  ))}
-                </select>
-              )
-              : (
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <input
-                    className="input"
-                    value={inputSymbol}
-                    onChange={e => setInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && setSymbol(inputSymbol)}
-                    placeholder="e.g. NIFTY30MAR26FUT"
-                    style={{ width: 200 }}
-                  />
-                  <button className="btn btn-primary" onClick={() => setSymbol(inputSymbol)}>
-                    Load
-                  </button>
-                </div>
-              )
-            }
+                  Load
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Window selector */}
           <div className="vol-control-group">
             <label className="vol-control-label">Rolling Window</label>
             <div className="vol-pill-group">
-              {RV_WINDOWS.map(w => (
+              {RV_WINDOWS.map((w) => (
                 <button
                   key={w}
-                  className={`vol-pill ${window_ === w ? 'vol-pill-active' : ''}`}
+                  className={`vol-pill ${window_ === w ? "vol-pill-active" : ""}`}
                   onClick={() => setWindow(w)}
                 >
                   {w}D
@@ -299,49 +426,71 @@ export default function Volatility() {
             <select
               className="input vol-select"
               value={method}
-              onChange={e => setMethod(e.target.value as RVMethod)}
+              onChange={(e) => setMethod(e.target.value as RVMethod)}
               disabled={showAll}
             >
-              {RV_METHODS.map(m => (
-                <option key={m} value={m}>{rvLabel(m)}</option>
+              {RV_METHODS.map((m) => (
+                <option key={m} value={m}>
+                  {rvLabel(m)}
+                </option>
               ))}
             </select>
           </div>
 
           {/* Overlay toggle */}
-          <div className="vol-control-group" style={{ alignSelf: 'flex-end' }}>
+          <div className="vol-control-group" style={{ alignSelf: "flex-end" }}>
             <label className="vol-toggle-label">
               <input
                 type="checkbox"
                 checked={showAll}
-                onChange={e => setShowAll(e.target.checked)}
+                onChange={(e) => setShowAll(e.target.checked)}
                 className="vol-toggle-input"
               />
               <span className="vol-toggle-track">
                 <span className="vol-toggle-thumb" />
               </span>
-              <span style={{ color: C.muted, fontSize: '0.85rem' }}>Overlay all methods</span>
+              <span style={{ color: C.muted, fontSize: "0.85rem" }}>
+                Overlay all methods
+              </span>
             </label>
           </div>
         </div>
 
         {!showAll && (
-          <div className="vol-method-desc">
-            {rvDescription(method)}
-          </div>
+          <div className="vol-method-desc">{rvDescription(method)}</div>
         )}
       </div>
 
-      {error && <div className="error-msg" style={{ marginBottom: '1rem' }}>{error}</div>}
+      {error && (
+        <div className="error-msg" style={{ marginBottom: "1rem" }}>
+          {error}
+        </div>
+      )}
 
       {/* ── Stat cards ── */}
       <div className="vol-stats-grid">
         <StatCard
           label={`RV ${window_}D · ${rvLabel(method)}`}
           value={fmtPct(rvCurrent)}
-          sub={rvCurrent ? `${rvRegime(rvCurrent)} volatility regime` : 'Insufficient data'}
+          sub={
+            rvCurrent
+              ? `${rvRegime(rvCurrent)} volatility regime`
+              : "Insufficient data"
+          }
           color={rvColor(rvCurrent)}
-          badge={rvCurrent ? { text: rvRegime(rvCurrent), kind: rvCurrent < 0.15 ? 'success' : rvCurrent < 0.25 ? 'warn' : 'error' } : undefined}
+          badge={
+            rvCurrent
+              ? {
+                text: rvRegime(rvCurrent),
+                kind:
+                  rvCurrent < 0.15
+                    ? "success"
+                    : rvCurrent < 0.25
+                      ? "warn"
+                      : "error",
+              }
+              : undefined
+          }
           loading={loading}
         />
         <StatCard
@@ -349,35 +498,95 @@ export default function Volatility() {
           value="—"
           sub="Awaiting options data"
           color={C.muted}
-          badge={{ text: 'Pending', kind: 'warn' }}
+          badge={{ text: "Pending", kind: "warn" }}
           loading={false}
         />
         <StatCard
           label="VRP (IV − RV)"
-          value={vrp != null ? fmtPct(vrp) : '—'}
-          sub={vrp != null
-            ? vrp > 0 ? 'Options expensive vs realised' : 'Options cheap vs realised'
-            : 'Available once IV is live'
+          value={vrp != null ? fmtPct(vrp) : "—"}
+          sub={
+            vrp != null
+              ? vrp > 0
+                ? "Options expensive vs realised"
+                : "Options cheap vs realised"
+              : "Available once IV is live"
           }
           color={vrp != null ? (vrp > 0 ? C.warn : C.accent) : C.muted}
           loading={loading}
         />
         <StatCard
           label="Candles loaded"
-          value={loading ? '…' : candles.length.toLocaleString()}
-          sub={candles.length > 0
-            ? `${new Date(candles[0].timestamp).toLocaleDateString()} → ${new Date(candles[candles.length - 1].timestamp).toLocaleDateString()}`
-            : undefined
+          value={loading ? "…" : candles.length.toLocaleString()}
+          sub={
+            candles.length > 0
+              ? `${new Date(candles[0].timestamp).toLocaleDateString()} → ${new Date(candles[candles.length - 1].timestamp).toLocaleDateString()}`
+              : undefined
           }
           loading={loading}
         />
       </div>
 
+      {/* ── Options metadata cards ── */}
+      {isOption && selectedInstrument && (
+        <div className="vol-stats-grid" style={{ marginTop: "0.75rem" }}>
+          <StatCard
+            label="Strike Price"
+            value={
+              selectedInstrument.strike != null
+                ? `₹${selectedInstrument.strike.toLocaleString("en-IN")}`
+                : "—"
+            }
+            color={C.blue}
+            loading={false}
+          />
+          <StatCard
+            label="Expiry"
+            value={
+              selectedInstrument.expiry
+                ? new Date(selectedInstrument.expiry).toLocaleDateString("en-IN", {
+                  day: "numeric",
+                  month: "short",
+                  year: "numeric",
+                })
+                : "—"
+            }
+            color={C.warn}
+            loading={false}
+          />
+          <StatCard
+            label="Option Type"
+            value={optionTypeBadge(symbol) ?? "—"}
+            color={optionTypeBadge(symbol) === "CE" ? C.accent : C.error}
+            badge={
+              optionTypeBadge(symbol)
+                ? {
+                  text: optionTypeBadge(symbol) === "CE" ? "Call" : "Put",
+                  kind: optionTypeBadge(symbol) === "CE" ? "success" : "error",
+                }
+                : undefined
+            }
+            loading={false}
+          />
+          {selectedInstrument.lot_size != null && (
+            <StatCard
+              label="Lot Size"
+              value={selectedInstrument.lot_size.toLocaleString("en-IN")}
+              color={C.purple}
+              loading={false}
+            />
+          )}
+        </div>
+      )}
+
       {/* ── RV Chart ── */}
       <div className="vol-section">
         <SectionHead
           title="Realized Volatility — Rolling History"
-          sub={showAll ? 'All 4 estimators overlaid' : `${window_}D rolling · ${rvLabel(method)}`}
+          sub={
+            showAll
+              ? "All 4 estimators overlaid"
+              : `${window_}D rolling · ${rvLabel(method)}`
+          }
         />
         <div className="card vol-chart-card">
           {loading ? (
@@ -386,12 +595,14 @@ export default function Volatility() {
             <div className="vol-chart-empty">
               {candles.length === 0
                 ? `No OHLCV data found for ${symbol}. Check the symbol or download data first.`
-                : `Not enough candles to compute ${window_}D rolling RV (need ${window_ * 75}, have ${candles.length}).`
-              }
+                : `Not enough candles to compute ${window_}D rolling RV (need ${window_ * 75}, have ${candles.length}).`}
             </div>
           ) : (
             <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={chartData} margin={{ top: 8, right: 24, left: 0, bottom: 0 }}>
+              <LineChart
+                data={chartData}
+                margin={{ top: 8, right: 24, left: 0, bottom: 0 }}
+              >
                 <CartesianGrid stroke={C.border} strokeDasharray="3 3" />
                 <XAxis
                   dataKey="ts"
@@ -404,21 +615,61 @@ export default function Volatility() {
                   tick={{ fill: C.muted, fontSize: 11 }}
                   axisLine={{ stroke: C.border }}
                   tickLine={false}
-                  tickFormatter={v => `${v.toFixed(1)}%`}
+                  tickFormatter={(v) => `${v.toFixed(1)}%`}
                   width={52}
                 />
                 <Tooltip content={<RVTooltip />} />
-                {showAll && <Legend wrapperStyle={{ color: C.muted, fontSize: 12 }} />}
+                {showAll && (
+                  <Legend wrapperStyle={{ color: C.muted, fontSize: 12 }} />
+                )}
                 {/* Reference bands */}
-                <ReferenceLine y={10} stroke={C.accent}  strokeDasharray="4 4" strokeOpacity={0.4} label={{ value: '10%', fill: C.accent,  fontSize: 10 }} />
-                <ReferenceLine y={20} stroke={C.warn}    strokeDasharray="4 4" strokeOpacity={0.4} label={{ value: '20%', fill: C.warn,    fontSize: 10 }} />
-                <ReferenceLine y={30} stroke={C.error}   strokeDasharray="4 4" strokeOpacity={0.4} label={{ value: '30%', fill: C.error,   fontSize: 10 }} />
+                <ReferenceLine
+                  y={10}
+                  stroke={C.accent}
+                  strokeDasharray="4 4"
+                  strokeOpacity={0.4}
+                  label={{ value: "10%", fill: C.accent, fontSize: 10 }}
+                />
+                <ReferenceLine
+                  y={20}
+                  stroke={C.warn}
+                  strokeDasharray="4 4"
+                  strokeOpacity={0.4}
+                  label={{ value: "20%", fill: C.warn, fontSize: 10 }}
+                />
+                <ReferenceLine
+                  y={30}
+                  stroke={C.error}
+                  strokeDasharray="4 4"
+                  strokeOpacity={0.4}
+                  label={{ value: "30%", fill: C.error, fontSize: 10 }}
+                />
                 {showAll ? (
                   <>
-                    <Line dataKey="Close-to-Close"    stroke={C.blue}   dot={false} strokeWidth={1.5} />
-                    <Line dataKey="Parkinson"         stroke={C.accent} dot={false} strokeWidth={1.5} />
-                    <Line dataKey="Garman-Klass"      stroke={C.warn}   dot={false} strokeWidth={2} />
-                    <Line dataKey="Rogers-Satchell"   stroke={C.purple} dot={false} strokeWidth={1.5} />
+                    <Line
+                      dataKey="Close-to-Close"
+                      stroke={C.blue}
+                      dot={false}
+                      strokeWidth={1.5}
+                    />
+                    <Line
+                      dataKey="Parkinson"
+                      stroke={C.accent}
+                      dot={false}
+                      strokeWidth={1.5}
+                    />
+                    <Line
+                      dataKey="Garman-Klass"
+                      stroke={C.warn}
+                      dot={false}
+                      strokeWidth={2}
+                    />
+                    <Line
+                      dataKey="Rogers-Satchell"
+                      stroke={C.purple}
+                      dot={false}
+                      strokeWidth={1.5}
+                    />
                   </>
                 ) : (
                   <Line
@@ -453,37 +704,50 @@ export default function Volatility() {
                 </tr>
               </thead>
               <tbody>
-                {RV_METHODS.map(m => {
-                  const rv = allRV[m]
+                {RV_METHODS.map((m) => {
+                  const rv = allRV[m];
                   return (
                     <tr
                       key={m}
-                      className={m === method ? 'vol-method-row-active' : ''}
-                      onClick={() => { setMethod(m); setShowAll(false) }}
+                      className={m === method ? "vol-method-row-active" : ""}
+                      onClick={() => {
+                        setMethod(m);
+                        setShowAll(false);
+                      }}
                     >
                       <td>
-                        <span className="mono" style={{ color: C.text }}>{rvLabel(m)}</span>
+                        <span className="mono" style={{ color: C.text }}>
+                          {rvLabel(m)}
+                        </span>
                         {m === method && (
-                          <span className="badge badge-success" style={{ marginLeft: 8, fontSize: '0.7rem' }}>
+                          <span
+                            className="badge badge-success"
+                            style={{ marginLeft: 8, fontSize: "0.7rem" }}
+                          >
                             active
                           </span>
                         )}
                       </td>
-                      <td className="mono" style={{ color: rvColor(rv), fontWeight: 600 }}>
+                      <td
+                        className="mono"
+                        style={{ color: rvColor(rv), fontWeight: 600 }}
+                      >
                         {fmtPct(rv)}
                       </td>
                       <td>
                         {rv != null && (
-                          <span className={`badge badge-${rv < 0.15 ? 'success' : rv < 0.25 ? 'warn' : 'error'}`}>
+                          <span
+                            className={`badge badge-${rv < 0.15 ? "success" : rv < 0.25 ? "warn" : "error"}`}
+                          >
                             {rvRegime(rv)}
                           </span>
                         )}
                       </td>
-                      <td style={{ color: C.muted, fontSize: '0.85rem' }}>
+                      <td style={{ color: C.muted, fontSize: "0.85rem" }}>
                         {rvDescription(m)}
                       </td>
                     </tr>
-                  )
+                  );
                 })}
               </tbody>
             </table>
@@ -500,5 +764,5 @@ export default function Volatility() {
         <IVPlaceholderPanel />
       </div>
     </div>
-  )
+  );
 }

@@ -72,13 +72,12 @@ def get_download_status(conn=Depends(get_db)):
         return Response(
             status="success",
             data={
+                "total_instruments": sum(instruments_by_type.values()),
                 "total_candles": total_candles,
                 "instruments_by_type": instruments_by_type,
                 "candles_by_type": candles_by_type,
-                "latest_run": {
-                    "run_at": latest_run[0] if latest_run else None,
-                    "status": latest_run[1] if latest_run else None,
-                },
+                "latest_run_at": latest_run[0].isoformat() if latest_run and latest_run[0] else None,
+                "latest_run_status": latest_run[1] if latest_run else None,
                 "last_successful_run": {
                     "run_at": last_success[0] if last_success else None,
                     "last_downloaded_at": last_success[1] if last_success else None,

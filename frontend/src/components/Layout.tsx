@@ -8,6 +8,8 @@ const nav = [
   { to: '/', label: 'Dashboard' },
   { to: '/instruments', label: 'Instruments' },
   { to: '/download', label: 'Download' },
+  { to: '/volatility', label: 'Volatility' },
+  { to: '/iv-rv', label: 'IV vs RV' },
 ]
 
 export default function Layout({ children }: LayoutProps) {

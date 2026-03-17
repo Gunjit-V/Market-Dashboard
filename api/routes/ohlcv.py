@@ -18,7 +18,7 @@ def get_ohlcv(
     page_size: int = Query(500, ge=1, le=5000),
     conn=Depends(get_db),
 ):
-    """Fetch 1-minute OHLCV data for a given symbol."""
+    """Fetch 5-minute OHLCV data for a given symbol."""
     try:
         # Default to last 7 days if no date range provided
         if not to_date:
@@ -47,7 +47,7 @@ def get_ohlcv(
             cur.execute(
                 """
                 SELECT COUNT(*)
-                FROM ohlcv_1min
+                FROM ohlcv_5min
                 WHERE instrument_id = %s
                   AND timestamp >= %s
                   AND timestamp <= %s
@@ -61,7 +61,7 @@ def get_ohlcv(
             cur.execute(
                 """
                 SELECT timestamp, open, high, low, close, volume
-                FROM ohlcv_1min
+                FROM ohlcv_5min
                 WHERE instrument_id = %s
                   AND timestamp >= %s
                   AND timestamp <= %s
@@ -104,7 +104,7 @@ def get_ohlcv(
 
 @router.get("/{symbol}/latest", response_model=Response)
 def get_latest_candle(symbol: str, conn=Depends(get_db)):
-    """Fetch the most recent 1-minute candle for a given symbol."""
+    """Fetch the most recent 5-minute candle for a given symbol."""
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -124,7 +124,7 @@ def get_latest_candle(symbol: str, conn=Depends(get_db)):
             cur.execute(
                 """
                 SELECT timestamp, open, high, low, close, volume
-                FROM ohlcv_1min
+                FROM ohlcv_5min
                 WHERE instrument_id = %s
                 ORDER BY timestamp DESC
                 LIMIT 1

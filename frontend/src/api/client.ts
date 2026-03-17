@@ -6,10 +6,9 @@ import type {
   DownloadLog,
   DownloadTriggerRequest,
   DownloadStatusData,
-  RVResponse,
-  IVResponse,
-  RVMethod,
-  RVWindow,
+  ATMInfo,
+  IVChainData,
+  IVHistoryData,
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '/api'
@@ -116,44 +115,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
+
+  // ─── Volatility API ────────────────────────────────────────────────
+
+  volatilityATM: () =>
+    request<ApiResponse<ATMInfo>>('/volatility/atm'),
+
+  volatilityChain: (expiry: string) =>
+    request<ApiResponse<IVChainData>>(`/volatility/chain?expiry=${expiry}`),
+
+  volatilityStrikes: (expiry: string) =>
+    request<ApiResponse<{ expiry: string; strikes: number[] }>>(`/volatility/strikes?expiry=${expiry}`),
+
+  volatilityIVHistory: (symbol: string) =>
+    request<ApiResponse<IVHistoryData>>(`/volatility/iv-history?symbol=${encodeURIComponent(symbol)}`),
 }
 
-// ── Volatility API calls — added from integration guide
-// These map to the backend endpoints you need to add in FastAPI.
-// Endpoint signatures are documented below each call.
-
-export const volatilityApi = {
-  rv: (
-    symbol: string,
-    params?: {
-      method?: RVMethod
-      window_days?: RVWindow
-      from_date?: string
-      to_date?: string
-    }
-  ) => {
-    const sp = new URLSearchParams()
-    if (params?.method)      sp.set('method',      params.method)
-    if (params?.window_days) sp.set('window_days', String(params.window_days))
-    if (params?.from_date)   sp.set('from_date',   params.from_date)
-    if (params?.to_date)     sp.set('to_date',     params.to_date)
-    const q = sp.toString()
-    // reuse your existing request() helper
-    return request<{ status: string; data: RVResponse }>(
-      `/volatility/rv/${encodeURIComponent(symbol)}${q ? `?${q}` : ''}`
-    )
-  },
-
-  iv: (
-    underlying: string,
-    params?: { from_date?: string; to_date?: string }
-  ) => {
-    const sp = new URLSearchParams()
-    if (params?.from_date) sp.set('from_date', params.from_date)
-    if (params?.to_date)   sp.set('to_date',   params.to_date)
-    const q = sp.toString()
-    return request<{ status: string; data: IVResponse }>(
-      `/volatility/iv/${encodeURIComponent(underlying)}${q ? `?${q}` : ''}`
-    )
-  },
-}
