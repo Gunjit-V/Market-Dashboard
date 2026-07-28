@@ -93,6 +93,22 @@ To start collecting ticks from SmartAPI:
 python downloader/tick_downloader.py
 ```
 
+## 🐳 Running with Docker
+
+You can easily run the entire stack (Database, API, Dashboard, Tick Downloader, and Frontend) using Docker Compose.
+
+1.  Make sure you have [Docker](https://www.docker.com/products/docker-desktop) installed.
+2.  Ensure your `.env` file is set up with your SmartAPI and Postgres credentials.
+3.  Run the following command from the root of the project:
+    ```bash
+    docker-compose up -d --build
+    ```
+
+This will expose:
+*   **FastAPI Backend**: `http://localhost:8000`
+*   **Frontend Client**: `http://localhost:5173`
+*   **PostgreSQL**: `localhost:5432`
+
 ## 🤝 Contributing
 
 Contributions are always welcome. Please feel free to open an issue or submit a Pull Request.

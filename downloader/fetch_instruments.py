@@ -1,7 +1,6 @@
-import os
-import json
 import requests
 import pandas as pd
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -48,8 +47,12 @@ if __name__ == "__main__":
 
     if df is not None:
         # Save full master to CSV for reference
-        df.to_csv("data/instrument_master.csv", index=False)
-        print("Full instrument master saved to instrument_master.csv")
+        # Ensure top‑level data directory exists
+        data_dir = Path(__file__).resolve().parents[1] / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        output_path = data_dir / "instrument_master.csv"
+        df.to_csv(output_path, index=False)
+        print(f"Full instrument master saved to {output_path}")
 
         # Filter and save NSE equities
         nse_eq = filter_nse_equities(df)

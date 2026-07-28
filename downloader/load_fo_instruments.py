@@ -1,10 +1,18 @@
 import os
+import sys
+from pathlib import Path
 import pandas as pd
 import pyotp
 from datetime import datetime
 from SmartApi import SmartConnect
 from dotenv import load_dotenv
+# Ensure the project root (two levels up) is on sys.path
+project_root = Path(__file__).resolve().parents[1]
+if str(project_root) not in sys.path:
+    sys.path.append(str(project_root))
 from db.connection import ConnectionManager
+
+load_dotenv()
 
 load_dotenv()
 
@@ -73,7 +81,7 @@ def filter_nifty_futures(df: pd.DataFrame) -> pd.DataFrame:
     return futures
 
 
-def load_master(csv_path: str = "data/instrument_master.csv") -> pd.DataFrame:
+def load_master(csv_path: str = str((Path(__file__).resolve().parents[1] / "data" / "instrument_master.csv"))) -> pd.DataFrame:
     """Load the instrument master CSV."""
     df = pd.read_csv(csv_path, low_memory=False)
     df["token"] = df["token"].astype(str)

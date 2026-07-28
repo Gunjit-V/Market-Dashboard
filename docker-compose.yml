@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  postgres-db:
+    image: postgres:15-alpine
+    container_name: market-db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-dbname}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-api
+    restart: always
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres-db:5432/${POSTGRES_DB:-dbname}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres-db
+
+  dashboard-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-dashboard
+    restart: always
+    command: python dashboard/server.py
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres-db:5432/${POSTGRES_DB:-dbname}
+    ports:
+      - "8765:8765" # Ensure to map the correct websocket port if not 8765
+    depends_on:
+      - postgres-db
+
+  tick-downloader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-tick-downloader
+    restart: on-failure
+    command: python downloader/tick_downloader.py
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres-db:5432/${POSTGRES_DB:-dbname}
+    depends_on:
+      - postgres-db
+
+  react-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: market-frontend
+    restart: always
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+    depends_on:
+      - api-server
+
+volumes:
+  postgres_data:
