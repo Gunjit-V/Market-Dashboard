@@ -20,14 +20,19 @@ def get_download_status(conn=Depends(get_db)):
             """)
             instruments_by_type = {row[0]: row[1] for row in cur.fetchall()}
 
-            # Total candles
+            # Report both timeframes; the primary total is five-minute data,
+            # which is what the OHLCV and volatility APIs consume.
             cur.execute("SELECT COUNT(*) FROM ohlcv_1min")
-            total_candles = cur.fetchone()[0]
+            total_candles_1min = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM ohlcv_5min")
+            total_candles_5min = cur.fetchone()[0]
+            cur.execute("SELECT MAX(timestamp) FROM ohlcv_5min")
+            latest_5min_candle_at = cur.fetchone()[0]
 
             # Candles by instrument type
             cur.execute("""
                 SELECT i.instrument_type, COUNT(o.id)
-                FROM ohlcv_1min o
+                FROM ohlcv_5min o
                 JOIN instruments i ON i.id = o.instrument_id
                 GROUP BY i.instrument_type
                 ORDER BY i.instrument_type
@@ -73,7 +78,10 @@ def get_download_status(conn=Depends(get_db)):
             status="success",
             data={
                 "total_instruments": sum(instruments_by_type.values()),
-                "total_candles": total_candles,
+                "total_candles": total_candles_5min,
+                "total_candles_1min": total_candles_1min,
+                "total_candles_5min": total_candles_5min,
+                "latest_5min_candle_at": latest_5min_candle_at,
                 "instruments_by_type": instruments_by_type,
                 "candles_by_type": candles_by_type,
                 "latest_run_at": latest_run[0].isoformat() if latest_run and latest_run[0] else None,
@@ -107,11 +115,11 @@ def get_symbol_download_status(symbol: str, conn=Depends(get_db)):
                        dl.candles_skipped, dl.error_message
                 FROM download_log dl
                 JOIN instruments i ON i.id = dl.instrument_id
-                WHERE i.symbol = %s
+                WHERE UPPER(i.symbol) = UPPER(%s)
                 ORDER BY dl.last_run_at DESC
                 LIMIT 1
                 """,
-                (symbol.upper(),)
+                (symbol,)
             )
             row = cur.fetchone()
 
@@ -158,8 +166,8 @@ def get_download_logs(
         params = []
 
         if symbol:
-            filters.append("i.symbol = %s")
-            params.append(symbol.upper())
+            filters.append("UPPER(i.symbol) = UPPER(%s)")
+            params.append(symbol)
 
         if status:
             filters.append("dl.status = %s")
@@ -231,13 +239,16 @@ def get_download_logs(
         )
 
 
-def run_download(instrument_types: list, days: int):
+def run_download(instrument_types: list, days: int, timeframe: str = "5m"):
     """Background task to trigger the downloader."""
     import sys
     import os
     sys.path.append(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__))))
-    from downloader import download_historical_data
+    if timeframe == "5m":
+        from downloader.ohlcv_5min import download_historical_data
+    else:
+        from downloader.ohlcv import download_historical_data
     download_historical_data(instrument_types=instrument_types, days=days)
 
 

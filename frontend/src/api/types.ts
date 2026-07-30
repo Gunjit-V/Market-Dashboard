@@ -61,6 +61,9 @@ export interface DownloadTriggerRequest {
 export interface DownloadStatusData {
   total_instruments: number
   total_candles: number
+  total_candles_1min?: number
+  total_candles_5min?: number
+  latest_5min_candle_at?: string
   latest_run_at?: string
   latest_run_status?: string
   download_counts_by_status?: Record<string, number>

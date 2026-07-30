@@ -60,6 +60,21 @@ services:
     depends_on:
       - postgres-db
 
+  ohlcv-5min-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-ohlcv-5min-scheduler
+    restart: unless-stopped
+    command: python -m scheduler.run_5min_pipeline
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres-db:5432/${POSTGRES_DB:-dbname}
+      TZ: Asia/Kolkata
+    depends_on:
+      - postgres-db
+
   react-frontend:
     build:
       context: ./frontend

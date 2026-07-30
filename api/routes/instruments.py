@@ -105,9 +105,9 @@ def get_instrument(symbol: str, conn=Depends(get_db)):
                 SELECT id, symbol, token, name, exchange, instrument_type,
                        expiry, strike, lot_size, created_at
                 FROM instruments
-                WHERE symbol = %s
+                WHERE UPPER(symbol) = UPPER(%s)
                 """,
-                (symbol.upper(),)
+                (symbol,)
             )
             row = cur.fetchone()
 

@@ -2,14 +2,41 @@ import os
 import psycopg2
 from psycopg2 import sql
 from dotenv import load_dotenv
+from urllib.parse import unquote, urlparse
 
 load_dotenv()
 
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = int(os.getenv("DB_PORT"))
+
+def _database_config() -> dict:
+    """Resolve PostgreSQL settings from DATABASE_URL or individual vars."""
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        parsed = urlparse(database_url)
+        if parsed.scheme not in {"postgres", "postgresql"}:
+            raise ValueError("DATABASE_URL must use the postgres:// or postgresql:// scheme")
+        return {
+            "dbname": unquote(parsed.path.lstrip("/")) or "dbname",
+            "user": unquote(parsed.username) if parsed.username else "user",
+            "password": unquote(parsed.password) if parsed.password else "password",
+            "host": parsed.hostname or "localhost",
+            "port": parsed.port or 5432,
+        }
+
+    return {
+        "dbname": os.getenv("DB_NAME") or os.getenv("POSTGRES_DB") or "dbname",
+        "user": os.getenv("DB_USER") or os.getenv("POSTGRES_USER") or "user",
+        "password": os.getenv("DB_PASSWORD") or os.getenv("POSTGRES_PASSWORD") or "password",
+        "host": os.getenv("DB_HOST") or "localhost",
+        "port": int(os.getenv("DB_PORT") or 5432),
+    }
+
+
+_DB_CONFIG = _database_config()
+DB_NAME = _DB_CONFIG["dbname"]
+DB_USER = _DB_CONFIG["user"]
+DB_PASSWORD = _DB_CONFIG["password"]
+DB_HOST = _DB_CONFIG["host"]
+DB_PORT = _DB_CONFIG["port"]
 
 
 class ConnectionManager:

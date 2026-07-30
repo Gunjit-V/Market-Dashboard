@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import pyotp
 from SmartApi import SmartConnect
@@ -30,7 +30,13 @@ def authenticate():
             data = smartApi.generateSession(CLIENT_ID, PASSWORD, totp)
 
             if not data["status"]:
-                print("Authentication failed:", data)
+                # Do not write the complete authentication response to a
+                # scheduled-task log: it can contain session credentials.
+                print(
+                    "Authentication failed: "
+                    f"{data.get('errorcode', 'unknown error')} "
+                    f"{data.get('message', '')}".strip()
+                )
                 return None
 
             print("Authentication successful!")
@@ -38,7 +44,9 @@ def authenticate():
 
         except Exception as e:
             print(
-                f"Authentication error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
+                "Authentication error "
+                f"(attempt {attempt + 1}/{MAX_RETRIES}): {type(e).__name__}"
+            )
             if attempt < MAX_RETRIES - 1:
                 print(f"Retrying in {backoff}s...")
                 time.sleep(backoff)
@@ -81,38 +89,76 @@ def create_ohlcv_5min_table_if_not_exists(conn):
         conn.rollback()
 
 
-def get_instruments(conn, instrument_types: list[str]) -> list:
-    """Fetch instruments from the database filtered by instrument type."""
-    placeholders = ",".join(["%s"] * len(instrument_types))
+def get_instruments(
+    conn,
+    instrument_types: list[str] | None = None,
+    symbols: list[str] | None = None,
+) -> list:
+    """Fetch instruments filtered by type and, optionally, exact symbols."""
+    filters = []
+    params = []
+
+    if instrument_types:
+        placeholders = ",".join(["%s"] * len(instrument_types))
+        filters.append(f"instrument_type IN ({placeholders})")
+        params.extend(instrument_types)
+
+    if symbols:
+        placeholders = ",".join(["%s"] * len(symbols))
+        filters.append(f"UPPER(symbol) IN ({placeholders})")
+        params.extend(symbol.upper() for symbol in symbols)
+
+    if not filters:
+        return []
+
+    where_clause = " AND ".join(filters)
     with conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT id, symbol, token, exchange, instrument_type, expiry
             FROM instruments
-            WHERE instrument_type IN ({placeholders})
+            WHERE {where_clause}
             ORDER BY instrument_type, expiry, symbol
             """,
-            instrument_types,
+            params,
         )
         return cur.fetchall()
 
 
 def get_last_downloaded_at(conn, instrument_id: int):
-    """Get the last successful download timestamp for an instrument."""
+    """Get the latest persisted five-minute candle for an instrument.
+
+    ``download_log`` is shared by the one- and five-minute downloaders, so it
+    is not a safe cursor for this pipeline. The data table is the source of
+    truth and also lets a partially completed run resume correctly.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT last_downloaded_at
-            FROM download_log
+            SELECT MAX(timestamp)
+            FROM ohlcv_5min
             WHERE instrument_id = %s
-              AND status = 'success'
-            ORDER BY last_run_at DESC
-            LIMIT 1
             """,
             (instrument_id,)
         )
         row = cur.fetchone()
         return row[0] if row else None
+
+
+def normalize_timestamp(value):
+    """Return a naive IST timestamp for PostgreSQL's timestamp column."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone(timedelta(hours=5, minutes=30)))
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
 
 
 def write_download_log(
@@ -180,7 +226,9 @@ def fetch_candle_data(smartApi, token: str, exchange: str, from_date: str, to_da
 
         except Exception as e:
             print(
-                f"    Exception fetching candle data (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
+                "    Exception fetching candle data "
+                f"(attempt {attempt + 1}/{MAX_RETRIES}): {type(e).__name__}"
+            )
             if attempt < MAX_RETRIES - 1:
                 print(f"    Retrying in {backoff}s...")
                 time.sleep(backoff)
@@ -201,6 +249,7 @@ def save_candles_to_db(conn, instrument_id: int, candles: list) -> tuple[int, in
 
     with conn.cursor() as cur:
         for candle in candles:
+            cur.execute("SAVEPOINT candle_insert")
             try:
                 timestamp = candle[0]
                 open_ = candle[1]
@@ -213,7 +262,7 @@ def save_candles_to_db(conn, instrument_id: int, candles: list) -> tuple[int, in
                     INSERT INTO ohlcv_5min (instrument_id, timestamp, open, high, low, close, volume)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (instrument_id, timestamp) DO NOTHING
-                """, (instrument_id, timestamp, open_, high, low, close, volume))
+                """, (instrument_id, normalize_timestamp(timestamp), open_, high, low, close, volume))
 
                 if cur.rowcount == 1:
                     inserted += 1
@@ -221,9 +270,11 @@ def save_candles_to_db(conn, instrument_id: int, candles: list) -> tuple[int, in
                     skipped += 1
 
             except Exception as e:
-                print(f"    Error inserting candle {candle}: {e}")
-                conn.rollback()
+                print(f"    Error inserting candle: {type(e).__name__}")
+                cur.execute("ROLLBACK TO SAVEPOINT candle_insert")
                 continue
+            finally:
+                cur.execute("RELEASE SAVEPOINT candle_insert")
 
     conn.commit()
     return inserted, skipped
@@ -234,19 +285,24 @@ def download_for_instrument(smartApi, conn, instrument: tuple, days: int) -> tup
     instrument_id, symbol, token, exchange, instrument_type, expiry = instrument
 
     end_date = datetime.now()
+    # Never request candles beyond an instrument's expiry. Expired contracts
+    # are intentionally retained here because their historical data is valid.
+    if expiry:
+        end_date = min(end_date, datetime.combine(expiry, datetime.max.time()))
 
-    # Skip expired instruments
-    if expiry and expiry < end_date.date():
-        return 0, 0
-
-    # Check last successful download — incremental logic
+    # Check the five-minute table for the incremental cursor.
     last_downloaded_at = get_last_downloaded_at(conn, instrument_id)
     if last_downloaded_at:
-        # Start from where we left off
-        start_date = last_downloaded_at
+        # Request a small overlap; ON CONFLICT makes the overlap safe and
+        # protects against a cursor that lands on a partially returned bar.
+        start_date = last_downloaded_at + timedelta(minutes=5)
     else:
-        # First time download — fetch full history
+        # For expired contracts, the requested history must be relative to
+        # expiry rather than today's date.
         start_date = end_date - timedelta(days=days)
+
+    if start_date >= end_date:
+        return 0, 0, last_downloaded_at
 
     total_inserted = 0
     total_skipped = 0
@@ -267,13 +323,10 @@ def download_for_instrument(smartApi, conn, instrument: tuple, days: int) -> tup
                 conn, instrument_id, candles)
             total_inserted += inserted
             total_skipped += skipped
-            # Track the latest candle timestamp
-            last_candle_time = candles[-1][0]
-            if isinstance(last_candle_time, str):
-                last_candle_time = datetime.strptime(
-                    last_candle_time, "%Y-%m-%dT%H:%M:%S%z")
-                # Strip timezone info for PostgreSQL
-                last_candle_time = last_candle_time.replace(tzinfo=None)
+            # Track the latest candle timestamp, independent of API ordering.
+            last_candle_time = max(
+                normalize_timestamp(candle[0]) for candle in candles
+            )
 
         current_start = current_end
         time.sleep(API_DELAY)
@@ -281,9 +334,58 @@ def download_for_instrument(smartApi, conn, instrument: tuple, days: int) -> tup
     return total_inserted, total_skipped, last_candle_time
 
 
-def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DAYS):
-    """Download historical 5-minute data for all instruments of given types."""
-    smartApi = authenticate()
+def backfill_from_one_minute(conn) -> tuple[int, int]:
+    """Build complete five-minute bars from existing one-minute data.
+
+    This is useful when the upstream five-minute endpoint was unavailable.
+    ``DO NOTHING`` preserves every existing five-minute row and makes the
+    operation safe to repeat.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH grouped AS (
+                SELECT
+                    instrument_id,
+                    date_trunc('hour', timestamp)
+                        + floor(extract(minute FROM timestamp) / 5)
+                          * interval '5 minutes' AS bucket,
+                    array_agg(open ORDER BY timestamp) AS opens,
+                    MAX(high) AS high,
+                    MIN(low) AS low,
+                    array_agg(close ORDER BY timestamp DESC) AS closes,
+                    SUM(volume)::BIGINT AS volume,
+                    COUNT(*) AS minute_count
+                FROM ohlcv_1min
+                GROUP BY instrument_id, bucket
+                HAVING COUNT(*) = 5
+            ), inserted AS (
+                INSERT INTO ohlcv_5min
+                    (instrument_id, timestamp, open, high, low, close, volume)
+                SELECT instrument_id, bucket, opens[1], high, low, closes[1], volume
+                FROM grouped
+                ON CONFLICT (instrument_id, timestamp) DO NOTHING
+                RETURNING 1
+            )
+            SELECT COUNT(*) FROM inserted
+        """)
+        inserted = cur.fetchone()[0]
+        conn.commit()
+
+    return inserted, 0
+
+
+def download_historical_data(
+    instrument_types: list[str] | None,
+    days: int = DEFAULT_DAYS,
+    symbols: list[str] | None = None,
+    smart_api=None,
+):
+    """Download incremental five-minute data for selected instruments.
+
+    ``smart_api`` lets a long-running scheduler reuse one authenticated
+    session instead of creating a new Angel One login every five minutes.
+    """
+    smartApi = smart_api or authenticate()
     if not smartApi:
         return
 
@@ -296,9 +398,12 @@ def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DA
         # Create the ohlcv_5min table if it doesn't exist
         create_ohlcv_5min_table_if_not_exists(conn)
 
-        instruments = get_instruments(conn, instrument_types)
+        instruments = get_instruments(conn, instrument_types, symbols)
         total = len(instruments)
-        print(f"\nFound {total} instruments to download: {instrument_types}")
+        print(
+            f"\nFound {total} instruments to download: "
+            f"types={instrument_types}, symbols={symbols}"
+        )
         print(
             f"Downloading up to {days} days of 5-minute data (incremental)...\n")
 
@@ -340,9 +445,9 @@ def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DA
                 write_download_log(
                     conn, instrument_id,
                     status="failed",
-                    error_message=str(e),
+                    error_message=f"{type(e).__name__} while downloading candle data",
                 )
-                print(f"FAILED: {e}")
+                print(f"FAILED: {type(e).__name__}")
                 failed.append(symbol)
                 continue
 
@@ -355,7 +460,7 @@ def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DA
             print(f"Failed symbols : {failed}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error: {type(e).__name__}")
 
     finally:
         if conn:

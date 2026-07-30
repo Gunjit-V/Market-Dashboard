@@ -93,6 +93,33 @@ To start collecting ticks from SmartAPI:
 python downloader/tick_downloader.py
 ```
 
+### 4. Automated 5-minute candles
+The Docker stack includes an `ohlcv-5min-scheduler` service. It runs after
+each completed five-minute NSE bar (09:20 through 15:30 IST), skips configured
+NSE holidays, and resumes from the latest stored candle. By default it updates
+only `Nifty 50`, which avoids making thousands of API requests every five
+minutes.
+
+Configure its scope in `.env` as needed:
+```env
+FIVE_MINUTE_SYMBOLS=Nifty 50
+FIVE_MINUTE_INSTRUMENT_TYPES=AMXIDX
+FIVE_MINUTE_POLL_SECONDS=15
+FIVE_MINUTE_SETTLE_DELAY_SECONDS=30
+
+# Comma-separated ISO dates for newly announced exchange holidays or special sessions.
+NSE_HOLIDAYS=2027-01-26
+NSE_SPECIAL_TRADING_DAYS=2027-02-01
+```
+
+To run it outside Docker:
+```bash
+python -m scheduler.run_5min_pipeline
+```
+
+On Windows, `scheduler\\run_5min_pipeline.bat` provides the equivalent
+long-running command for a Task Scheduler entry or a service wrapper.
+
 ## 🐳 Running with Docker
 
 You can easily run the entire stack (Database, API, Dashboard, Tick Downloader, and Frontend) using Docker Compose.

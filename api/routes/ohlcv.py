@@ -29,8 +29,8 @@ def get_ohlcv(
         with conn.cursor() as cur:
             # Resolve symbol to instrument_id
             cur.execute(
-                "SELECT id FROM instruments WHERE symbol = %s",
-                (symbol.upper(),)
+                "SELECT id FROM instruments WHERE UPPER(symbol) = UPPER(%s)",
+                (symbol,)
             )
             row = cur.fetchone()
 
@@ -108,8 +108,8 @@ def get_latest_candle(symbol: str, conn=Depends(get_db)):
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id FROM instruments WHERE symbol = %s",
-                (symbol.upper(),)
+                "SELECT id FROM instruments WHERE UPPER(symbol) = UPPER(%s)",
+                (symbol,)
             )
             row = cur.fetchone()
 
