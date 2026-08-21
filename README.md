@@ -93,32 +93,48 @@ To start collecting ticks from SmartAPI:
 python downloader/tick_downloader.py
 ```
 
-### 4. Automated 5-minute candles
-The Docker stack includes an `ohlcv-5min-scheduler` service. It runs after
-each completed five-minute NSE bar (09:20 through 15:30 IST), skips configured
-NSE holidays, and resumes from the latest stored candle. By default it updates
-only `Nifty 50`, which avoids making thousands of API requests every five
-minutes.
+### 4. Automated 1-minute and 5-minute candles
+The Docker stack includes an `ohlcv-scheduler` service. During market hours
+(09:15–15:30 IST) it submits a 1-minute download on every trading minute and
+a 5-minute download on each five-minute boundary, skips configured NSE
+holidays, and resumes from the latest stored candle. By default it updates
+`NIFTY,BANKNIFTY,SENSEX,BANKEX`.
 
 Configure its scope in `.env` as needed:
 ```env
-FIVE_MINUTE_SYMBOLS=Nifty 50
-FIVE_MINUTE_INSTRUMENT_TYPES=AMXIDX
-FIVE_MINUTE_POLL_SECONDS=15
-FIVE_MINUTE_SETTLE_DELAY_SECONDS=30
+OHLCV_INSTRUMENT_TYPES=AMXIDX
+OHLCV_NAMES=NIFTY,BANKNIFTY,SENSEX,BANKEX
+OHLCV_BAR_DELAY_SECONDS=10
 
-# Comma-separated ISO dates for newly announced exchange holidays or special sessions.
+# Comma-separated ISO dates layered on top of the built-in NSE calendar
+# (scheduler/nse_calendar.py).
 NSE_HOLIDAYS=2027-01-26
 NSE_SPECIAL_TRADING_DAYS=2027-02-01
 ```
 
 To run it outside Docker:
 ```bash
-python -m scheduler.run_5min_pipeline
+python -m scheduler.ohlcv_scheduler
 ```
 
-On Windows, `scheduler\\run_5min_pipeline.bat` provides the equivalent
-long-running command for a Task Scheduler entry or a service wrapper.
+### 5. Automated daily instrument sync
+The Docker stack includes an `instrument-sync-scheduler` service. Once per
+trading day, at or after `INSTRUMENT_SYNC_TIME` (default `08:45` IST, before
+market open), it runs `downloader/sync_instruments.py`: re-downloads the full
+instrument master, upserts it, deactivates expired contracts, and activates
+the current-month instruments. This keeps futures rollover and newly listed
+option series up to date without manual intervention.
+
+Configure it in `.env` as needed:
+```env
+INSTRUMENT_SYNC_TIME=08:45
+INSTRUMENT_SYNC_SAVE_CSV=true
+```
+
+To run it outside Docker:
+```bash
+python -m scheduler.instrument_sync_scheduler
+```
 
 ## 🐳 Running with Docker
 

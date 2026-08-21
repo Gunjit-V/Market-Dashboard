@@ -1,18 +1,7 @@
-version: '3.8'
-
 services:
-  postgres-db:
-    image: postgres:15-alpine
-    container_name: market-db
-    restart: always
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
-      POSTGRES_DB: ${POSTGRES_DB:-dbname}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+  # postgres-db is intentionally not used: the app connects to the native
+  # Windows Postgres instance (already populated) via host.docker.internal
+  # instead of a containerized database. See DATABASE_URL below.
 
   api-server:
     build:
@@ -24,11 +13,11 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres-db:5432/${POSTGRES_DB:-dbname}
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT:-5432}/${DB_NAME}
     ports:
       - "8000:8000"
-    depends_on:
-      - postgres-db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   dashboard-server:
     build:
@@ -40,11 +29,11 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres-db:5432/${POSTGRES_DB:-dbname}
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT:-5432}/${DB_NAME}
     ports:
-      - "8765:8765" # Ensure to map the correct websocket port if not 8765
-    depends_on:
-      - postgres-db
+      - "8050:8050"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   tick-downloader:
     build:
@@ -56,24 +45,39 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres-db:5432/${POSTGRES_DB:-dbname}
-    depends_on:
-      - postgres-db
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT:-5432}/${DB_NAME}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
-  ohlcv-5min-scheduler:
+  ohlcv-scheduler:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: market-ohlcv-5min-scheduler
+    container_name: market-ohlcv-scheduler
     restart: unless-stopped
-    command: python -m scheduler.run_5min_pipeline
+    command: python -m scheduler.ohlcv_scheduler
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD:-password}@postgres-db:5432/${POSTGRES_DB:-dbname}
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT:-5432}/${DB_NAME}
       TZ: Asia/Kolkata
-    depends_on:
-      - postgres-db
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  instrument-sync-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-instrument-sync-scheduler
+    restart: unless-stopped
+    command: python -m scheduler.instrument_sync_scheduler
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT:-5432}/${DB_NAME}
+      TZ: Asia/Kolkata
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   react-frontend:
     build:
@@ -87,6 +91,3 @@ services:
       - VITE_API_URL=http://localhost:8000
     depends_on:
       - api-server
-
-volumes:
-  postgres_data:
