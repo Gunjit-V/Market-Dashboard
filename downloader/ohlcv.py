@@ -1,6 +1,6 @@
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import pyotp
 from SmartApi import SmartConnect
@@ -14,62 +14,160 @@ PASSWORD = os.getenv("ANGEL_PASSWORD")
 TOTP_TOKEN = os.getenv("ANGEL_TOTP_TOKEN")
 
 CHUNK_DAYS = 5
-API_DELAY = 0.5
-DEFAULT_DAYS = 30
+API_DELAY = 2.0  # Delay between API calls to avoid rate limiting
+DEFAULT_DAYS = 1000
+MAX_RETRIES = 5
+INITIAL_BACKOFF = 2.0  # Start with 2 second backoff
 
+# ── Interval configuration ───────────────────────────────────────────────────
+# Each entry maps a short label to the Angel One API interval name, the
+# PostgreSQL table that stores the candles, and the bar width in minutes
+# (used for the incremental cursor offset).
+
+INTERVALS = {
+    "1m": {"api_interval": "ONE_MINUTE",  "table": "ohlcv_1min", "minutes": 1},
+    "5m": {"api_interval": "FIVE_MINUTE", "table": "ohlcv_5min", "minutes": 5},
+}
+
+
+def _interval_config(interval: str) -> dict:
+    """Return the config dict for *interval*, or raise on invalid input."""
+    try:
+        return INTERVALS[interval]
+    except KeyError:
+        valid = ", ".join(sorted(INTERVALS))
+        raise ValueError(
+            f"Unknown interval {interval!r}. Choose from: {valid}"
+        )
+
+
+# ── Authentication ────────────────────────────────────────────────────────────
 
 def authenticate():
-    """Authenticate with Angel One SmartAPI."""
-    try:
-        smartApi = SmartConnect(API_KEY)
-        totp = pyotp.TOTP(TOTP_TOKEN).now()
-        data = smartApi.generateSession(CLIENT_ID, PASSWORD, totp)
+    """Authenticate with Angel One SmartAPI with retry logic."""
+    backoff = INITIAL_BACKOFF
+    for attempt in range(MAX_RETRIES):
+        try:
+            smartApi = SmartConnect(API_KEY)
+            totp = pyotp.TOTP(TOTP_TOKEN).now()
+            data = smartApi.generateSession(CLIENT_ID, PASSWORD, totp)
 
-        if not data["status"]:
-            print("Authentication failed:", data)
-            return None
+            if not data["status"]:
+                # Do not write the complete authentication response to a
+                # scheduled-task log: it can contain session credentials.
+                print(
+                    "Authentication failed: "
+                    f"{data.get('errorcode', 'unknown error')} "
+                    f"{data.get('message', '')}".strip()
+                )
+                return None
 
-        print("Authentication successful!")
-        return smartApi
+            print("Authentication successful!")
+            return smartApi
 
-    except Exception as e:
-        print(f"Authentication error: {e}")
-        return None
+        except Exception as e:
+            print(
+                "Authentication error "
+                f"(attempt {attempt + 1}/{MAX_RETRIES}): {type(e).__name__}"
+            )
+            if attempt < MAX_RETRIES - 1:
+                print(f"Retrying in {backoff}s...")
+                time.sleep(backoff)
+                backoff *= 2
+            else:
+                print("Max authentication retries reached.")
+                return None
+
+    return None
 
 
-def get_instruments(conn, instrument_types: list[str]) -> list:
-    """Fetch instruments from the database filtered by instrument type."""
-    placeholders = ",".join(["%s"] * len(instrument_types))
+# ── Instrument lookup ─────────────────────────────────────────────────────────
+
+def get_instruments(
+    conn,
+    instrument_types: list[str] | None = None,
+    names: list[str] | None = None,
+    symbols: list[str] | None = None,
+) -> list:
+    """Fetch active instruments filtered by type, name, and/or symbol.
+
+    Filters are combined with AND.  Within each filter the values are ORed.
+    At least one filter must be provided; otherwise an empty list is returned.
+    """
+    filters = []
+    params = []
+
+    if instrument_types:
+        placeholders = ",".join(["%s"] * len(instrument_types))
+        filters.append(f"instrument_type IN ({placeholders})")
+        params.extend(instrument_types)
+
+    if names:
+        name_clauses = " OR ".join(["name = %s"] * len(names))
+        filters.append(f"({name_clauses})")
+        params.extend(names)
+
+    if symbols:
+        placeholders = ",".join(["%s"] * len(symbols))
+        filters.append(f"UPPER(symbol) IN ({placeholders})")
+        params.extend(symbol.upper() for symbol in symbols)
+
+    if not filters:
+        return []
+
+    filters.append("is_active = TRUE")
+    where_clause = " AND ".join(filters)
+
     with conn.cursor() as cur:
         cur.execute(
             f"""
             SELECT id, symbol, token, exchange, instrument_type, expiry
             FROM instruments
-            WHERE instrument_type IN ({placeholders})
+            WHERE {where_clause}
             ORDER BY instrument_type, expiry, symbol
             """,
-            instrument_types,
+            params,
         )
         return cur.fetchall()
 
 
-def get_last_downloaded_at(conn, instrument_id: int):
-    """Get the last successful download timestamp for an instrument."""
+# ── Incremental cursor ────────────────────────────────────────────────────────
+
+def get_last_downloaded_at(conn, instrument_id: int, table: str):
+    """Return the latest candle timestamp for *instrument_id* in *table*.
+
+    Querying the data table directly is safer than ``download_log`` because
+    the log is shared across intervals and a partially completed run resumes
+    correctly from the actual data.
+    """
     with conn.cursor() as cur:
         cur.execute(
-            """
-            SELECT last_downloaded_at
-            FROM download_log
-            WHERE instrument_id = %s
-              AND status = 'success'
-            ORDER BY last_run_at DESC
-            LIMIT 1
-            """,
-            (instrument_id,)
+            f"SELECT MAX(timestamp) FROM {table} WHERE instrument_id = %s",
+            (instrument_id,),
         )
         row = cur.fetchone()
         return row[0] if row else None
 
+
+# ── Timestamp normalisation ───────────────────────────────────────────────────
+
+def normalize_timestamp(value):
+    """Return a naive IST timestamp for PostgreSQL's timestamp column."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone(timedelta(hours=5, minutes=30)))
+        parsed = parsed.replace(tzinfo=None)
+    return parsed
+
+
+# ── Download log ──────────────────────────────────────────────────────────────
 
 def write_download_log(
     conn,
@@ -98,35 +196,74 @@ def write_download_log(
                 candles_inserted,
                 candles_skipped,
                 error_message,
-            )
+            ),
         )
     conn.commit()
 
 
-def fetch_candle_data(smartApi, token: str, exchange: str, from_date: str, to_date: str) -> list:
-    """Fetch 1-minute candle data from Angel One API."""
-    try:
-        params = {
-            "exchange": exchange,
-            "symboltoken": token,
-            "interval": "ONE_MINUTE",
-            "fromdate": from_date,
-            "todate": to_date,
-        }
-        response = smartApi.getCandleData(params)
+# ── API fetch with retry ─────────────────────────────────────────────────────
 
-        if response and response.get("status"):
-            return response.get("data", [])
-        else:
-            return []
+def fetch_candle_data(
+    smartApi,
+    token: str,
+    exchange: str,
+    from_date: str,
+    to_date: str,
+    api_interval: str,
+) -> list:
+    """Fetch candle data from Angel One API with retry logic for rate limiting."""
+    params = {
+        "exchange": exchange,
+        "symboltoken": token,
+        "interval": api_interval,
+        "fromdate": from_date,
+        "todate": to_date,
+    }
 
-    except Exception as e:
-        print(f"    Exception fetching candle data: {e}")
-        return []
+    backoff = INITIAL_BACKOFF
+    for attempt in range(MAX_RETRIES):
+        try:
+            response = smartApi.getCandleData(params)
+
+            if response and response.get("status"):
+                return response.get("data", [])
+            elif response and response.get("errorcode") == "AB1004":
+                # Rate limiting error, retry with exponential backoff
+                if attempt < MAX_RETRIES - 1:
+                    print(
+                        f"    Rate limited. Retrying in {backoff}s... "
+                        f"(Attempt {attempt + 1}/{MAX_RETRIES})"
+                    )
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                else:
+                    print("    Max retries reached for rate limiting.")
+                    return []
+            else:
+                return []
+
+        except Exception as e:
+            print(
+                "    Exception fetching candle data "
+                f"(attempt {attempt + 1}/{MAX_RETRIES}): {type(e).__name__}"
+            )
+            if attempt < MAX_RETRIES - 1:
+                print(f"    Retrying in {backoff}s...")
+                time.sleep(backoff)
+                backoff *= 2
+            else:
+                return []
+
+    return []
 
 
-def save_candles_to_db(conn, instrument_id: int, candles: list) -> tuple[int, int]:
-    """Save candle data to the ohlcv_1min table."""
+# ── Persist candles ───────────────────────────────────────────────────────────
+
+def save_candles_to_db(
+    conn, instrument_id: int, candles: list, table: str
+) -> tuple[int, int]:
+    """Save candle data to *table* (``ohlcv_1min`` or ``ohlcv_5min``)."""
     if not candles:
         return 0, 0
 
@@ -135,6 +272,7 @@ def save_candles_to_db(conn, instrument_id: int, candles: list) -> tuple[int, in
 
     with conn.cursor() as cur:
         for candle in candles:
+            cur.execute("SAVEPOINT candle_insert")
             try:
                 timestamp = candle[0]
                 open_ = candle[1]
@@ -143,11 +281,23 @@ def save_candles_to_db(conn, instrument_id: int, candles: list) -> tuple[int, in
                 close = candle[4]
                 volume = candle[5]
 
-                cur.execute("""
-                    INSERT INTO ohlcv_1min (instrument_id, timestamp, open, high, low, close, volume)
+                cur.execute(
+                    f"""
+                    INSERT INTO {table}
+                        (instrument_id, timestamp, open, high, low, close, volume)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (instrument_id, timestamp) DO NOTHING
-                """, (instrument_id, timestamp, open_, high, low, close, volume))
+                    """,
+                    (
+                        instrument_id,
+                        normalize_timestamp(timestamp),
+                        open_,
+                        high,
+                        low,
+                        close,
+                        volume,
+                    ),
+                )
 
                 if cur.rowcount == 1:
                     inserted += 1
@@ -155,32 +305,46 @@ def save_candles_to_db(conn, instrument_id: int, candles: list) -> tuple[int, in
                     skipped += 1
 
             except Exception as e:
-                print(f"    Error inserting candle {candle}: {e}")
-                conn.rollback()
+                print(f"    Error inserting candle: {type(e).__name__}")
+                cur.execute("ROLLBACK TO SAVEPOINT candle_insert")
                 continue
+            finally:
+                cur.execute("RELEASE SAVEPOINT candle_insert")
 
     conn.commit()
     return inserted, skipped
 
 
-def download_for_instrument(smartApi, conn, instrument: tuple, days: int) -> tuple[int, int]:
+# ── Per-instrument download ───────────────────────────────────────────────────
+
+def download_for_instrument(
+    smartApi, conn, instrument: tuple, days: int, cfg: dict
+) -> tuple[int, int, datetime | None]:
     """Download historical data for a single instrument incrementally."""
     instrument_id, symbol, token, exchange, instrument_type, expiry = instrument
+    table = cfg["table"]
+    bar_minutes = cfg["minutes"]
+    api_interval = cfg["api_interval"]
 
     end_date = datetime.now()
+    # Never request candles beyond an instrument's expiry. Expired contracts
+    # are intentionally retained here because their historical data is valid.
+    if expiry:
+        end_date = min(end_date, datetime.combine(expiry, datetime.max.time()))
 
-    # Skip expired instruments
-    if expiry and expiry < end_date.date():
-        return 0, 0
-
-    # Check last successful download — incremental logic
-    last_downloaded_at = get_last_downloaded_at(conn, instrument_id)
+    # Check the data table for the incremental cursor.
+    last_downloaded_at = get_last_downloaded_at(conn, instrument_id, table)
     if last_downloaded_at:
-        # Start from where we left off
-        start_date = last_downloaded_at
+        # Request a small overlap; ON CONFLICT makes the overlap safe and
+        # protects against a cursor that lands on a partially returned bar.
+        start_date = last_downloaded_at + timedelta(minutes=bar_minutes)
     else:
-        # First time download — fetch full history
+        # For expired contracts, the requested history must be relative to
+        # expiry rather than today's date.
         start_date = end_date - timedelta(days=days)
+
+    if start_date >= end_date:
+        return 0, 0, last_downloaded_at
 
     total_inserted = 0
     total_skipped = 0
@@ -194,20 +358,19 @@ def download_for_instrument(smartApi, conn, instrument: tuple, days: int) -> tup
         to_str = current_end.strftime("%Y-%m-%d %H:%M")
 
         candles = fetch_candle_data(
-            smartApi, token, exchange, from_str, to_str)
+            smartApi, token, exchange, from_str, to_str, api_interval
+        )
 
         if candles:
             inserted, skipped = save_candles_to_db(
-                conn, instrument_id, candles)
+                conn, instrument_id, candles, table
+            )
             total_inserted += inserted
             total_skipped += skipped
-            # Track the latest candle timestamp
-            last_candle_time = candles[-1][0]
-            if isinstance(last_candle_time, str):
-                last_candle_time = datetime.strptime(
-                    last_candle_time, "%Y-%m-%dT%H:%M:%S%z")
-                # Strip timezone info for PostgreSQL
-                last_candle_time = last_candle_time.replace(tzinfo=None)
+            # Track the latest candle timestamp, independent of API ordering.
+            last_candle_time = max(
+                normalize_timestamp(candle[0]) for candle in candles
+            )
 
         current_start = current_end
         time.sleep(API_DELAY)
@@ -215,9 +378,78 @@ def download_for_instrument(smartApi, conn, instrument: tuple, days: int) -> tup
     return total_inserted, total_skipped, last_candle_time
 
 
-def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DAYS):
-    """Download historical 1-minute data for all instruments of given types."""
-    smartApi = authenticate()
+# ── 5-min backfill from 1-min data ───────────────────────────────────────────
+
+def backfill_from_one_minute(conn) -> tuple[int, int]:
+    """Build complete five-minute bars from existing one-minute data.
+
+    This is useful when the upstream five-minute endpoint was unavailable.
+    ``DO NOTHING`` preserves every existing five-minute row and makes the
+    operation safe to repeat.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            WITH grouped AS (
+                SELECT
+                    instrument_id,
+                    date_trunc('hour', timestamp)
+                        + floor(extract(minute FROM timestamp) / 5)
+                          * interval '5 minutes' AS bucket,
+                    array_agg(open ORDER BY timestamp) AS opens,
+                    MAX(high) AS high,
+                    MIN(low) AS low,
+                    array_agg(close ORDER BY timestamp DESC) AS closes,
+                    SUM(volume)::BIGINT AS volume,
+                    COUNT(*) AS minute_count
+                FROM ohlcv_1min
+                GROUP BY instrument_id, bucket
+                HAVING COUNT(*) = 5
+            ), inserted AS (
+                INSERT INTO ohlcv_5min
+                    (instrument_id, timestamp, open, high, low, close, volume)
+                SELECT instrument_id, bucket, opens[1], high, low, closes[1], volume
+                FROM grouped
+                ON CONFLICT (instrument_id, timestamp) DO NOTHING
+                RETURNING 1
+            )
+            SELECT COUNT(*) FROM inserted
+        """)
+        inserted = cur.fetchone()[0]
+        conn.commit()
+
+    return inserted, 0
+
+
+# ── Main entry point ─────────────────────────────────────────────────────────
+
+def download_historical_data(
+    interval: str = "5m",
+    instrument_types: list[str] | None = None,
+    names: list[str] | None = None,
+    symbols: list[str] | None = None,
+    days: int = DEFAULT_DAYS,
+    smart_api=None,
+):
+    """Download incremental candle data for selected instruments.
+
+    Parameters
+    ----------
+    interval : str
+        Candle interval — ``"1m"`` or ``"5m"``.
+    instrument_types : list[str] | None
+        Filter by ``instrument_type`` column (e.g. ``["AMXIDX", "FUTIDX"]``).
+    names : list[str] | None
+        Filter by exact ``name`` column (e.g. ``["Nifty 50", "NIFTY"]``).
+    symbols : list[str] | None
+        Filter by ``symbol`` column (case-insensitive).
+    days : int
+        How many days of history to fetch on the first run.
+    smart_api : SmartConnect | None
+        Reuse an existing authenticated session (useful for schedulers).
+    """
+    cfg = _interval_config(interval)
+
+    smartApi = smart_api or authenticate()
     if not smartApi:
         return
 
@@ -227,11 +459,16 @@ def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DA
     try:
         conn = manager.get_connection()
 
-        instruments = get_instruments(conn, instrument_types)
+        instruments = get_instruments(conn, instrument_types, names, symbols)
         total = len(instruments)
-        print(f"\nFound {total} instruments to download: {instrument_types}")
         print(
-            f"Downloading up to {days} days of 1-minute data (incremental)...\n")
+            f"\nFound {total} instruments to download: "
+            f"interval={interval}, types={instrument_types}, names={names}"
+        )
+        print(
+            f"Downloading up to {days} days of {interval} data "
+            f"(incremental)...\n"
+        )
 
         grand_total_inserted = 0
         grand_total_skipped = 0
@@ -243,7 +480,8 @@ def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DA
 
             try:
                 result = download_for_instrument(
-                    smartApi, conn, instrument, days)
+                    smartApi, conn, instrument, days, cfg
+                )
                 inserted, skipped, last_candle_time = result
 
                 grand_total_inserted += inserted
@@ -271,14 +509,14 @@ def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DA
                 write_download_log(
                     conn, instrument_id,
                     status="failed",
-                    error_message=str(e),
+                    error_message=f"{type(e).__name__} while downloading candle data",
                 )
-                print(f"FAILED: {e}")
+                print(f"FAILED: {type(e).__name__}")
                 failed.append(symbol)
                 continue
 
         print(f"\n{'='*60}")
-        print(f"Download Complete!")
+        print("Download Complete!")
         print(f"Total Inserted : {grand_total_inserted}")
         print(f"Total Skipped  : {grand_total_skipped}")
         print(f"Failed         : {len(failed)}")
@@ -286,7 +524,7 @@ def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DA
             print(f"Failed symbols : {failed}")
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error: {type(e).__name__}")
 
     finally:
         if conn:
@@ -295,7 +533,11 @@ def download_historical_data(instrument_types: list[str], days: int = DEFAULT_DA
 
 
 if __name__ == "__main__":
-    download_historical_data(
-        instrument_types=["AMXIDX", "FUTIDX", "OPTIDX"],
-        days=DEFAULT_DAYS
-    )
+    iv = ["1m", "5m"]
+    for interval in iv:
+        download_historical_data(
+            interval=interval,
+            instrument_types=["AMXIDX"],
+            names=["NIFTY", "BANKNIFTY", "SENSEX", "BANKEX"],
+            days=DEFAULT_DAYS,
+        )

@@ -245,11 +245,10 @@ def run_download(instrument_types: list, days: int, timeframe: str = "5m"):
     import os
     sys.path.append(os.path.dirname(
         os.path.dirname(os.path.abspath(__file__))))
-    if timeframe == "5m":
-        from downloader.ohlcv_5min import download_historical_data
-    else:
-        from downloader.ohlcv import download_historical_data
-    download_historical_data(instrument_types=instrument_types, days=days)
+    from downloader.ohlcv import download_historical_data
+    download_historical_data(
+        interval=timeframe, instrument_types=instrument_types, days=days
+    )
 
 
 @router.post("/trigger", response_model=Response)

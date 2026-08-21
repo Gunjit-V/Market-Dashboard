@@ -28,7 +28,7 @@ def get_latest_tick(symbol: str, conn=Depends(get_db)):
 
             cur.execute(
                 """
-                SELECT timestamp, ltp, ltq, volume, bid, ask
+                SELECT timestamp, ltp, ltq, volume, best_5_buy, best_5_sell
                 FROM tick_data
                 WHERE instrument_id = %s
                 ORDER BY timestamp DESC
@@ -51,8 +51,8 @@ def get_latest_tick(symbol: str, conn=Depends(get_db)):
                 "ltp": float(row[1]),
                 "ltq": row[2],
                 "volume": row[3],
-                "bid": float(row[4]) if row[4] else None,
-                "ask": float(row[5]) if row[5] else None,
+                "best_5_buy": row[4],
+                "best_5_sell": row[5],
             }
         )
 
@@ -121,7 +121,7 @@ def get_tick_data(
             offset = (page - 1) * page_size
             cur.execute(
                 """
-                SELECT timestamp, ltp, ltq, volume, bid, ask
+                SELECT timestamp, ltp, ltq, volume, best_5_buy, best_5_sell
                 FROM tick_data
                 WHERE instrument_id = %s
                   AND timestamp >= %s
@@ -139,8 +139,8 @@ def get_tick_data(
                 "ltp": float(row[1]),
                 "ltq": row[2],
                 "volume": row[3],
-                "bid": float(row[4]) if row[4] else None,
-                "ask": float(row[5]) if row[5] else None,
+                "best_5_buy": row[4],
+                "best_5_sell": row[5],
             }
             for row in rows
         ]

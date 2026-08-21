@@ -226,6 +226,7 @@ def get_instruments(conn, instrument_types: list[str], limit: int = None) -> lis
         SELECT id, symbol, token, exchange, instrument_type, expiry
         FROM instruments
         WHERE instrument_type IN ({placeholders})
+          AND is_active = TRUE
         ORDER BY instrument_type, symbol
     """
     if limit:
