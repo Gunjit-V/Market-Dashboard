@@ -148,6 +148,47 @@ To run it outside Docker:
 python -m scheduler.instrument_sync_scheduler
 ```
 
+### 6. Strategy backtesting and paper trading
+The `backtest/` package holds the simulation engine (`backtest/engine.py`),
+realized-volatility estimators (`backtest/rv.py`, mirroring
+`frontend/src/utils/rv.ts`), and two strategies:
+
+*   **`rv_breakout`** — trades Nifty 50 directionally when short-window
+    realized vol expands past a long-window baseline (a volatility regime
+    shift), exiting once the regime normalizes.
+*   **`vrp_reversion`** — sells/buys Nifty index option premium based on the
+    volatility risk premium (implied vol computed via
+    `api/utils/iv.py`'s Black-Scholes solver, minus the underlying's
+    realized vol), one strategy instance per option symbol.
+
+Both share one `Simulator`/fill/PnL model, backed by the `strategies`,
+`backtest_runs`, `trades`, `equity_curve`, and `signals` tables (see
+`db/init_schema.sql`). Backtests replay history (`backtest/runner.py`);
+live paper trading (`backtest/paper_trading.py`) evaluates the same
+strategies forward from the latest bar, with state reconstructed from
+`trades`/`equity_curve` on each run rather than kept in memory — no real
+orders are ever placed.
+
+Run a backtest via the API:
+```bash
+curl -X POST http://localhost:8000/strategies/backtests/run \
+  -H "Content-Type: application/json" \
+  -d '{"strategy":"rv_breakout","symbol":"Nifty 50"}'
+```
+
+The Docker stack includes a `paper-trading-scheduler` service that evaluates
+`rv_breakout` on `PAPER_RV_SYMBOLS` and `vrp_reversion` on Nifty options
+within `PAPER_VRP_STRIKE_RANGE` strikes of the current ATM, once per 5-min
+bar during market hours:
+```env
+PAPER_RV_SYMBOLS=Nifty 50
+PAPER_VRP_UNDERLYING=NIFTY25AUG26FUT
+PAPER_VRP_STRIKE_RANGE=2
+```
+
+Results are visible in the frontend under **Strategies** (backtests) and
+**Paper Trading** (live virtual positions and PnL).
+
 ## 🐳 Running with Docker
 
 You can easily run the entire stack (Database, API, Dashboard, Tick Downloader, and Frontend) using Docker Compose.

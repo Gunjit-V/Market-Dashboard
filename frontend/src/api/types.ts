@@ -116,3 +116,104 @@ export interface IVHistoryData {
   series: IVHistoryPoint[]
 }
 
+// ─── Strategies / Backtesting / Paper Trading ─────────────────────────────────
+
+export interface Strategy {
+  id: number
+  name: string
+  description?: string
+  params: Record<string, unknown>
+  is_active: boolean
+  created_at?: string
+}
+
+export interface BacktestRun {
+  id: number
+  strategy_id: number
+  params: Record<string, unknown>
+  from_date: string
+  to_date: string
+  starting_capital: number
+  ending_capital: number | null
+  total_trades: number
+  winning_trades: number
+  losing_trades: number
+  total_pnl: number | null
+  max_drawdown_pct: number | null
+  sharpe_ratio: number | null
+  win_rate_pct: number | null
+  status: 'running' | 'completed' | 'failed'
+  error_message?: string | null
+  started_at: string
+  completed_at?: string | null
+}
+
+export interface BacktestRequest {
+  strategy: 'rv_breakout' | 'vrp_reversion'
+  symbol?: string
+  option_symbol?: string
+  underlying_symbol?: string
+  from_date?: string
+  to_date?: string
+  starting_capital?: number
+  capital_per_trade?: number
+  params?: Record<string, unknown>
+}
+
+export interface Trade {
+  id: number
+  backtest_run_id: number | null
+  strategy_id: number
+  is_paper: boolean
+  instrument_id: number
+  symbol: string
+  side: 'LONG' | 'SHORT'
+  signal_reason?: string
+  entry_time: string
+  entry_price: number
+  quantity: number
+  exit_time: string | null
+  exit_price: number | null
+  exit_reason: string | null
+  pnl: number | null
+  pnl_pct: number | null
+  status: 'open' | 'closed'
+  metadata?: Record<string, unknown>
+}
+
+export interface EquityPoint {
+  timestamp: string
+  equity: number
+  cash: number
+  open_positions_value: number
+  drawdown_pct?: number | null
+}
+
+export interface SignalRow {
+  id: number
+  strategy_id: number
+  strategy_name: string
+  instrument_id: number | null
+  symbol: string | null
+  timestamp: string
+  signal_type: 'entry_long' | 'entry_short' | 'exit' | 'hold'
+  reason?: string
+  metrics?: Record<string, number>
+  acted_on: boolean
+}
+
+export interface PaperTradingSummary {
+  strategy_id: number
+  strategy_name: string
+  starting_capital: number
+  current_equity: number
+  total_pnl: number
+  total_pnl_pct: number
+  open_trades: number
+  closed_trades: number
+  winning_trades: number
+  losing_trades: number
+  win_rate_pct: number
+  max_drawdown_pct: number
+}
+

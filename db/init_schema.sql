@@ -129,7 +129,135 @@ CREATE INDEX IF NOT EXISTS idx_download_log_last_run
 ON download_log(last_run_at DESC);
 
 
--- ── 6. Notification trigger (from setup_trigger.sql) ─────────────────────────
+-- ── 6. strategies ────────────────────────────────────────────────────────────
+-- Registry of strategy definitions. `params` holds the JSON config a given
+-- run/session used (thresholds, windows, etc.) so results stay reproducible
+-- even as code defaults change over time.
+
+CREATE TABLE IF NOT EXISTS strategies (
+    id                  SERIAL PRIMARY KEY,
+    name                VARCHAR(100) NOT NULL UNIQUE,
+    description         TEXT,
+    params              JSONB NOT NULL DEFAULT '{}',
+    is_active           BOOLEAN DEFAULT FALSE,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+-- ── 7. backtest_runs ─────────────────────────────────────────────────────────
+-- One row per backtest execution — summary stats for quick comparison across
+-- strategies/parameter sets without recomputing from raw trades each time.
+
+CREATE TABLE IF NOT EXISTS backtest_runs (
+    id                  SERIAL PRIMARY KEY,
+    strategy_id         INTEGER NOT NULL REFERENCES strategies(id),
+    params              JSONB NOT NULL DEFAULT '{}',
+    from_date           TIMESTAMP NOT NULL,
+    to_date             TIMESTAMP NOT NULL,
+    starting_capital    DECIMAL(14, 2) NOT NULL,
+    ending_capital      DECIMAL(14, 2),
+    total_trades        INTEGER DEFAULT 0,
+    winning_trades      INTEGER DEFAULT 0,
+    losing_trades       INTEGER DEFAULT 0,
+    total_pnl           DECIMAL(14, 2),
+    max_drawdown_pct    DECIMAL(8, 4),
+    sharpe_ratio        DECIMAL(8, 4),
+    win_rate_pct        DECIMAL(6, 2),
+    status              VARCHAR(20) NOT NULL DEFAULT 'running',
+    error_message       TEXT,
+    started_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    completed_at        TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_strategy
+ON backtest_runs(strategy_id);
+
+
+-- ── 8. trades ────────────────────────────────────────────────────────────────
+-- Individual simulated trades. Shared by backtests (backtest_run_id set,
+-- is_paper=FALSE) and live paper trading (backtest_run_id NULL, is_paper=
+-- TRUE) so both paths reuse one fill/PnL representation and one set of
+-- reporting queries.
+
+CREATE TABLE IF NOT EXISTS trades (
+    id                  BIGSERIAL PRIMARY KEY,
+    backtest_run_id     INTEGER REFERENCES backtest_runs(id) ON DELETE CASCADE,
+    strategy_id         INTEGER NOT NULL REFERENCES strategies(id),
+    is_paper            BOOLEAN NOT NULL DEFAULT FALSE,
+    instrument_id        INTEGER NOT NULL REFERENCES instruments(id),
+    side                VARCHAR(10) NOT NULL,   -- 'LONG' or 'SHORT'
+    signal_reason       VARCHAR(255),
+    entry_time          TIMESTAMP NOT NULL,
+    entry_price         DECIMAL(12, 4) NOT NULL,
+    quantity            INTEGER NOT NULL,
+    exit_time           TIMESTAMP,
+    exit_price          DECIMAL(12, 4),
+    exit_reason         VARCHAR(50),            -- 'signal_exit', 'stop_loss', 'take_profit', 'expiry', 'eod', 'manual'
+    pnl                 DECIMAL(14, 2),
+    pnl_pct             DECIMAL(8, 4),
+    status              VARCHAR(20) NOT NULL DEFAULT 'open',  -- 'open' or 'closed'
+    metadata            JSONB DEFAULT '{}',
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_trades_backtest_run
+ON trades(backtest_run_id);
+
+CREATE INDEX IF NOT EXISTS idx_trades_strategy_paper
+ON trades(strategy_id, is_paper);
+
+CREATE INDEX IF NOT EXISTS idx_trades_status
+ON trades(status) WHERE status = 'open';
+
+CREATE INDEX IF NOT EXISTS idx_trades_instrument
+ON trades(instrument_id);
+
+
+-- ── 9. equity_curve ──────────────────────────────────────────────────────────
+-- Periodic portfolio-value snapshots for both backtests and paper trading,
+-- so charts don't need to replay every trade to draw an equity line.
+
+CREATE TABLE IF NOT EXISTS equity_curve (
+    id                  BIGSERIAL PRIMARY KEY,
+    backtest_run_id     INTEGER REFERENCES backtest_runs(id) ON DELETE CASCADE,
+    strategy_id         INTEGER NOT NULL REFERENCES strategies(id),
+    is_paper            BOOLEAN NOT NULL DEFAULT FALSE,
+    timestamp           TIMESTAMP NOT NULL,
+    equity              DECIMAL(14, 2) NOT NULL,
+    cash                DECIMAL(14, 2) NOT NULL,
+    open_positions_value DECIMAL(14, 2) DEFAULT 0,
+    drawdown_pct        DECIMAL(8, 4) DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_equity_curve_run
+ON equity_curve(backtest_run_id, timestamp);
+
+CREATE INDEX IF NOT EXISTS idx_equity_curve_strategy_paper
+ON equity_curve(strategy_id, is_paper, timestamp DESC);
+
+
+-- ── 10. signals ──────────────────────────────────────────────────────────────
+-- Log of every signal a live strategy evaluation produced, whether or not it
+-- resulted in a trade (e.g. filtered by an existing open position) — useful
+-- for auditing "why didn't it trade" and for a live signal feed in the UI.
+
+CREATE TABLE IF NOT EXISTS signals (
+    id                  BIGSERIAL PRIMARY KEY,
+    strategy_id         INTEGER NOT NULL REFERENCES strategies(id),
+    instrument_id       INTEGER REFERENCES instruments(id),
+    timestamp           TIMESTAMP NOT NULL,
+    signal_type         VARCHAR(20) NOT NULL,   -- 'entry_long', 'entry_short', 'exit'
+    reason              VARCHAR(255),
+    metrics             JSONB DEFAULT '{}',      -- e.g. {"rv_short": 0.18, "rv_long": 0.12, "ratio": 1.5}
+    acted_on            BOOLEAN DEFAULT FALSE,
+    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_signals_strategy_time
+ON signals(strategy_id, timestamp DESC);
+
+
+-- ── 11. Notification trigger (from setup_trigger.sql) ─────────────────────────
 
 CREATE OR REPLACE FUNCTION notify_new_tick()
 RETURNS TRIGGER AS $$

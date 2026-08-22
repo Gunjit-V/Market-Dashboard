@@ -9,6 +9,13 @@ import type {
   ATMInfo,
   IVChainData,
   IVHistoryData,
+  Strategy,
+  BacktestRun,
+  BacktestRequest,
+  Trade,
+  EquityPoint,
+  SignalRow,
+  PaperTradingSummary,
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '/api'
@@ -138,5 +145,49 @@ export const api = {
 
   volatilityIVHistory: (symbol: string) =>
     request<ApiResponse<IVHistoryData>>(`/volatility/iv-history?symbol=${encodeURIComponent(symbol)}`),
+
+  // ─── Strategies / Backtesting ────────────────────────────────────────
+
+  strategies: () => request<ApiResponse<Strategy[]>>('/strategies'),
+
+  strategyBacktests: (strategyId: number) =>
+    request<ApiResponse<BacktestRun[]>>(`/strategies/${strategyId}/backtests`),
+
+  backtestEquityCurve: (runId: number) =>
+    request<ApiResponse<EquityPoint[]>>(`/strategies/backtests/${runId}/equity-curve`),
+
+  backtestTrades: (runId: number) =>
+    request<ApiResponse<Trade[]>>(`/strategies/backtests/${runId}/trades`),
+
+  runBacktest: (body: BacktestRequest) =>
+    request<ApiResponse<null>>('/strategies/backtests/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  // ─── Paper Trading ────────────────────────────────────────────────────
+
+  paperTradingSummary: () =>
+    request<ApiResponse<PaperTradingSummary[]>>('/paper-trading/summary'),
+
+  paperTrades: (params?: { strategy_id?: number; status?: string; limit?: number }) => {
+    const sp = new URLSearchParams()
+    if (params?.strategy_id != null) sp.set('strategy_id', String(params.strategy_id))
+    if (params?.status) sp.set('status', params.status)
+    if (params?.limit) sp.set('limit', String(params.limit))
+    const q = sp.toString()
+    return request<ApiResponse<Trade[]>>(`/paper-trading/trades${q ? `?${q}` : ''}`)
+  },
+
+  paperEquityCurve: (strategyId: number) =>
+    request<ApiResponse<EquityPoint[]>>(`/paper-trading/equity-curve?strategy_id=${strategyId}`),
+
+  paperSignals: (params?: { strategy_id?: number; limit?: number }) => {
+    const sp = new URLSearchParams()
+    if (params?.strategy_id != null) sp.set('strategy_id', String(params.strategy_id))
+    if (params?.limit) sp.set('limit', String(params.limit))
+    const q = sp.toString()
+    return request<ApiResponse<SignalRow[]>>(`/paper-trading/signals${q ? `?${q}` : ''}`)
+  },
 }
 

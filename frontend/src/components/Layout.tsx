@@ -9,6 +9,8 @@ const nav = [
   { to: '/instruments', label: 'Instruments' },
   { to: '/download', label: 'Download' },
   { to: '/volatility', label: 'Volatility' },
+  { to: '/strategies', label: 'Strategies' },
+  { to: '/paper-trading', label: 'Paper Trading' },
 ]
 
 export default function Layout({ children }: LayoutProps) {

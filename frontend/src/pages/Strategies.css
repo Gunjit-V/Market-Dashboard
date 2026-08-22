@@ -1,0 +1,302 @@
+/* pages/Strategies.css */
+
+.strat-header {
+  margin-bottom: 1.25rem;
+}
+
+.strat-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin: 0 0 0.25rem;
+  letter-spacing: -0.02em;
+}
+
+.strat-subtitle {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+/* ── New backtest form ───────────────────────────────────────────────────── */
+.strat-form {
+  margin-bottom: 1.25rem;
+}
+
+.strat-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  align-items: flex-end;
+}
+
+.strat-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.strat-control-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.strat-pill-group {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.strat-pill {
+  padding: 0.4rem 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.strat-pill:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+.strat-pill-active {
+  background: rgba(34, 197, 94, 0.15);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.strat-method-desc {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.strat-submit-msg {
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--accent);
+}
+
+/* ── Layout: sidebar + main ──────────────────────────────────────────────── */
+.strat-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (max-width: 800px) {
+  .strat-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.strat-sidebar {
+  padding: 0.75rem;
+}
+
+.strat-sidebar-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 0.6rem;
+  padding: 0 0.25rem;
+}
+
+.strat-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.strat-list-item {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.82rem;
+  transition: background 0.15s;
+}
+
+.strat-list-item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.strat-list-item-active {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--accent);
+}
+
+.strat-empty {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  padding: 0.75rem 0.25rem;
+}
+
+/* ── Run selector ─────────────────────────────────────────────────────────── */
+.strat-runs-scroll {
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+  padding-bottom: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.strat-run-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.8rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+
+.strat-run-pill:hover {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+.strat-run-pill-active {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.strat-run-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.strat-running-banner {
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius);
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.35);
+  color: #eab308;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+/* ── Stat cards ───────────────────────────────────────────────────────────── */
+.strat-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.strat-stat-card {
+  padding: 0.9rem 1rem;
+}
+
+.strat-stat-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+}
+
+.strat-stat-sub {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.2rem;
+}
+
+/* ── Sections ─────────────────────────────────────────────────────────────── */
+.strat-section {
+  margin-bottom: 1.5rem;
+}
+
+.strat-section-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-bottom: 0.6rem;
+}
+
+.strat-chart-card {
+  padding: 1rem;
+}
+
+.strat-chart-loading,
+.strat-chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 280px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* ── Trade table ──────────────────────────────────────────────────────────── */
+.strat-trade-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.strat-trade-table th {
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.strat-trade-table td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.strat-trade-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* ── Tooltip ──────────────────────────────────────────────────────────────── */
+.strat-tooltip {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+}
+
+.strat-tooltip-ts {
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+  font-size: 0.75rem;
+}
+
+.strat-tooltip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
