@@ -40,7 +40,10 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: market-tick-downloader
-    restart: on-failure
+    # tick_downloader.py connects once, blocks on the WebSocket, and exits
+    # cleanly (code 0) when the session/day ends — on-failure would never
+    # restart it after that, leaving it dead until the next manual restart.
+    restart: unless-stopped
     command: python downloader/tick_downloader.py
     env_file:
       - .env
@@ -71,6 +74,21 @@ services:
     container_name: market-instrument-sync-scheduler
     restart: unless-stopped
     command: python -m scheduler.instrument_sync_scheduler
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT:-5432}/${DB_NAME}
+      TZ: Asia/Kolkata
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  paper-trading-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-paper-trading-scheduler
+    restart: unless-stopped
+    command: python -m scheduler.paper_trading_scheduler
     env_file:
       - .env
     environment:

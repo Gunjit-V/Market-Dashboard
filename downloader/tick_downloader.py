@@ -3,7 +3,7 @@ import json
 import time
 import math
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as clock_time
 from queue import Queue, Empty
 from dotenv import load_dotenv
 import pyotp
@@ -11,8 +11,12 @@ from SmartApi import SmartConnect
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 from SmartApi.smartExceptions import DataException
 from db.connection import ConnectionManager
+from scheduler.nse_calendar import IST, is_nse_trading_day
 
 load_dotenv()
+
+MARKET_OPEN = clock_time(9, 15)
+MARKET_CLOSE = clock_time(15, 30)
 
 API_KEY = os.getenv("ANGEL_API_KEY")
 CLIENT_ID = os.getenv("ANGEL_CLIENT_ID")
@@ -746,23 +750,59 @@ def get_tick_data_range(
         return []
 
 
+def _seconds_until_next_session() -> float:
+    """Return seconds to sleep until the next trading-day market open.
+
+    start_realtime_tick_collection() connects immediately and has no
+    market-hours awareness of its own, so under a container restart policy
+    like `unless-stopped` it would otherwise crash-loop (or sit connected
+    to a dead session) outside 09:15-15:30 IST on a trading day.
+    """
+    now = datetime.now(IST)
+    candidate = now
+
+    while True:
+        candidate_date = candidate.date()
+        if is_nse_trading_day(candidate_date):
+            open_dt = datetime.combine(candidate_date, MARKET_OPEN, tzinfo=IST)
+            close_dt = datetime.combine(candidate_date, MARKET_CLOSE, tzinfo=IST)
+            if now < open_dt:
+                return (open_dt - now).total_seconds()
+            if now <= close_dt:
+                return 0.0
+        candidate = datetime.combine(
+            candidate_date + timedelta(days=1), clock_time(0, 0), tzinfo=IST
+        )
+
+
+def run_forever() -> None:
+    """Run one tick-collection session per trading day, waiting between them.
+
+    Suitable for a long-lived container: sleeps until the next 09:15 IST
+    trading-day open, runs collection for that session (the WebSocket loop
+    inside start_realtime_tick_collection blocks until the session ends),
+    then waits for the next one — instead of the process exiting after a
+    single day's session.
+    """
+    while True:
+        wait_seconds = _seconds_until_next_session()
+        if wait_seconds > 0:
+            print(f"Market closed. Sleeping {wait_seconds / 60:.1f} min until next open...")
+            time.sleep(wait_seconds)
+
+        print("Starting Real-Time Tick Data Collection (SNAP_QUOTE — maximum data)...\n")
+        start_realtime_tick_collection(
+            instrument_types=["AMXIDX", "FUTIDX"],
+            mode=MODE_SNAP_QUOTE,
+            subscribe_options=True,
+            index_name="NIFTY",
+            num_strikes=5,
+        )
+        print("Session ended.")
+        # Avoid a tight loop if the session ends immediately (e.g. auth
+        # failure) instead of at market close.
+        time.sleep(30)
+
+
 if __name__ == "__main__":
-    print("Starting Real-Time Tick Data Collection (SNAP_QUOTE — maximum data)...\n")
-
-    # Index + Futures + ATM ± 5 Options (CE + PE)
-    start_realtime_tick_collection(
-        instrument_types=["AMXIDX", "FUTIDX"],
-        mode=MODE_SNAP_QUOTE,
-        subscribe_options=True,
-        index_name="NIFTY",
-        num_strikes=5,
-    )
-
-    # For BANKNIFTY options (strikes in multiples of 100):
-    # start_realtime_tick_collection(
-    #     instrument_types=["AMXIDX", "FUTIDX"],
-    #     mode=MODE_SNAP_QUOTE,
-    #     subscribe_options=True,
-    #     index_name="BANKNIFTY",
-    #     num_strikes=5,
-    # )
+    run_forever()
