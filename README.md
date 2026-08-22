@@ -98,11 +98,14 @@ The Docker stack includes an `ohlcv-scheduler` service. During market hours
 (09:15–15:30 IST) it submits a 1-minute download on every trading minute and
 a 5-minute download on each five-minute boundary, skips configured NSE
 holidays, and resumes from the latest stored candle. By default it updates
-`NIFTY,BANKNIFTY,SENSEX,BANKEX`.
+whichever active instruments match `NIFTY,BANKNIFTY,SENSEX,BANKEX` across
+`AMXIDX,FUTIDX,OPTIDX` — in practice this is the four tracked indices, the
+Nifty future, and whatever Nifty options `instrument-sync-scheduler` (below)
+has activated for the day.
 
 Configure its scope in `.env` as needed:
 ```env
-OHLCV_INSTRUMENT_TYPES=AMXIDX
+OHLCV_INSTRUMENT_TYPES=AMXIDX,FUTIDX,OPTIDX
 OHLCV_NAMES=NIFTY,BANKNIFTY,SENSEX,BANKEX
 OHLCV_BAR_DELAY_SECONDS=10
 
@@ -125,10 +128,19 @@ instrument master, upserts it, deactivates expired contracts, and activates
 the current-month instruments. This keeps futures rollover and newly listed
 option series up to date without manual intervention.
 
+It also recomputes the Nifty ATM strike from a live spot quote and activates
+Nifty options within `OPTIONS_STRIKE_RANGE` strikes of ATM (default 10, i.e.
+21 strikes × CE/PE = 42 contracts) at the nearest expiry — since the ATM
+strike moves daily, this activation set is fully recomputed (previously
+active options are deactivated first) rather than accumulated. The
+`ohlcv-scheduler` then downloads 1m/5m candles for whichever options are
+currently active, alongside the Nifty future and the tracked indices.
+
 Configure it in `.env` as needed:
 ```env
 INSTRUMENT_SYNC_TIME=08:45
 INSTRUMENT_SYNC_SAVE_CSV=true
+OPTIONS_STRIKE_RANGE=10
 ```
 
 To run it outside Docker:

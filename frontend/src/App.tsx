@@ -5,7 +5,6 @@ import Instruments from './pages/Instruments'
 import OHLCV from './pages/OHLCV'
 import Download from './pages/Download'
 import Volatility from './pages/Volatility'
-import IVRVDashboard from './pages/IVRVDashboard'
 
 function App() {
   return (
@@ -16,7 +15,6 @@ function App() {
         <Route path="/ohlcv/:symbol" element={<OHLCV />} />
         <Route path="/download" element={<Download />} />
         <Route path="/volatility" element={<Volatility />} />
-        <Route path="/iv-rv" element={<IVRVDashboard />} />
       </Routes>
     </Layout>
   )

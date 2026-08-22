@@ -14,6 +14,8 @@ def list_instruments(
         None, description="Filter by exchange e.g. NSE, NFO"),
     search: Optional[str] = Query(
         None, description="Search by symbol or name"),
+    is_active: Optional[bool] = Query(
+        None, description="Filter by active/inactive status"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
     conn=Depends(get_db),
@@ -35,6 +37,10 @@ def list_instruments(
             filters.append("(symbol ILIKE %s OR name ILIKE %s)")
             params.append(f"%{search}%")
             params.append(f"%{search}%")
+
+        if is_active is not None:
+            filters.append("is_active = %s")
+            params.append(is_active)
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
 

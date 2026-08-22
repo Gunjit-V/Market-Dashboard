@@ -19,6 +19,12 @@ DEFAULT_DAYS = 1000
 MAX_RETRIES = 5
 INITIAL_BACKOFF = 2.0  # Start with 2 second backoff
 
+# Derivative contracts (futures/options) are short-lived and never trade
+# before they are listed, so paginating DEFAULT_DAYS back for them wastes
+# API calls on empty chunks. Cap their first-run backfill window instead.
+DERIVATIVE_TYPES = {"FUTIDX", "OPTIDX", "FUTSTK", "OPTSTK"}
+DERIVATIVE_DAYS = 90
+
 # ── Interval configuration ───────────────────────────────────────────────────
 # Each entry maps a short label to the Angel One API interval name, the
 # PostgreSQL table that stores the candles, and the bar width in minutes
@@ -340,8 +346,11 @@ def download_for_instrument(
         start_date = last_downloaded_at + timedelta(minutes=bar_minutes)
     else:
         # For expired contracts, the requested history must be relative to
-        # expiry rather than today's date.
-        start_date = end_date - timedelta(days=days)
+        # expiry rather than today's date. Derivative contracts get a much
+        # shorter window than `days`, since they cannot have data before
+        # they were listed (see DERIVATIVE_DAYS above).
+        effective_days = min(days, DERIVATIVE_DAYS) if instrument_type in DERIVATIVE_TYPES else days
+        start_date = end_date - timedelta(days=effective_days)
 
     if start_date >= end_date:
         return 0, 0, last_downloaded_at
@@ -537,7 +546,7 @@ if __name__ == "__main__":
     for interval in iv:
         download_historical_data(
             interval=interval,
-            instrument_types=["AMXIDX"],
+            instrument_types=["AMXIDX", "FUTIDX", "OPTIDX"],
             names=["NIFTY", "BANKNIFTY", "SENSEX", "BANKEX"],
             days=DEFAULT_DAYS,
         )

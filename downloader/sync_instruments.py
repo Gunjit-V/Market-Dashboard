@@ -2,12 +2,15 @@
 Sync Instrument Master from Angel One OpenAPI to PostgreSQL.
 
 Downloads the full ~145k instrument master, upserts it into the instruments
-table, then activates the Nifty 50 Index and Nifty Futures while deactivating
-expired contracts.
+table, then activates the Nifty 50 Index, Nifty Futures, and Nifty options
+within ATM ± OPTIONS_STRIKE_RANGE strikes at the nearest expiry, while
+deactivating expired contracts.
 
-Intended to run once daily before market open.
+Intended to run once daily before market open, since the ATM strike moves
+with the market and the option activation set must be recomputed each day.
 """
 
+import os
 import sys
 from pathlib import Path
 import pandas as pd
@@ -19,8 +22,16 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from db.connection import ConnectionManager
+from downloader.ohlcv import authenticate
 
 URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+
+# Nifty 50 spot quote, used to compute the ATM strike for option activation.
+SPOT_EXCHANGE = "NSE"
+SPOT_SYMBOL = "Nifty 50"
+SPOT_TOKEN = "99926000"
+STRIKE_STEP = 50
+OPTIONS_STRIKE_RANGE = int(os.getenv("OPTIONS_STRIKE_RANGE", "10"))
 
 
 # ── Download & clean ──────────────────────────────────────────────────────────
@@ -171,6 +182,67 @@ def activate_nifty_instruments(conn):
     conn.commit()
 
 
+def get_spot_price(smart_api) -> float | None:
+    """Fetch the current Nifty 50 spot LTP via SmartAPI."""
+    try:
+        response = smart_api.ltpData(SPOT_EXCHANGE, SPOT_SYMBOL, SPOT_TOKEN)
+        if response and response.get("status"):
+            return float(response["data"]["ltp"])
+        print(f"Failed to fetch Nifty 50 spot price: {response}")
+        return None
+    except Exception as e:
+        print(f"Error fetching Nifty 50 spot price: {e}")
+        return None
+
+
+def activate_nifty_options(conn, smart_api):
+    """Activate Nifty options within ATM ± OPTIONS_STRIKE_RANGE strikes.
+
+    Deactivates all previously active options first, since the ATM strike
+    (and therefore the relevant strike band) moves daily — yesterday's
+    activated options are not necessarily still within range today.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE instruments
+            SET is_active = FALSE
+            WHERE instrument_type = 'OPTIDX' AND name = 'NIFTY' AND is_active = TRUE
+        """)
+        conn.commit()
+
+    spot_price = get_spot_price(smart_api)
+    if spot_price is None:
+        print("Skipping Nifty option activation: no spot price available.")
+        return
+
+    atm_strike = round(spot_price / STRIKE_STEP) * STRIKE_STEP
+    lower_strike = atm_strike - (OPTIONS_STRIKE_RANGE * STRIKE_STEP)
+    upper_strike = atm_strike + (OPTIONS_STRIKE_RANGE * STRIKE_STEP)
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE instruments
+            SET is_active = TRUE
+            WHERE instrument_type = 'OPTIDX'
+              AND name = 'NIFTY'
+              AND expiry = (
+                  SELECT MIN(expiry) FROM instruments
+                  WHERE instrument_type = 'OPTIDX'
+                    AND name = 'NIFTY'
+                    AND expiry >= CURRENT_DATE
+              )
+              AND strike >= %s
+              AND strike <= %s
+        """, (lower_strike, upper_strike))
+        opt_activated = cur.rowcount
+    conn.commit()
+
+    print(
+        f"Activated {opt_activated} Nifty option instrument(s) "
+        f"(ATM {atm_strike}, strikes {lower_strike}-{upper_strike})."
+    )
+
+
 # ── Main entry point ─────────────────────────────────────────────────────────
 
 def sync_all(save_csv: bool = True):
@@ -192,6 +264,13 @@ def sync_all(save_csv: bool = True):
     try:
         upsert_instruments(conn, df)
         activate_nifty_instruments(conn)
+
+        smart_api = authenticate()
+        if smart_api is not None:
+            activate_nifty_options(conn, smart_api)
+        else:
+            print("Skipping Nifty option activation: SmartAPI authentication failed.")
+
         print("\nInstrument sync complete!")
     except Exception as e:
         conn.rollback()

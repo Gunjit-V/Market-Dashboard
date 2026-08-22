@@ -41,7 +41,7 @@ def _csv(name: str, default: str = "") -> list[str]:
     return [value.strip() for value in os.getenv(name, default).split(",") if value.strip()]
 
 
-INSTRUMENT_TYPES = _csv("OHLCV_INSTRUMENT_TYPES", "AMXIDX")
+INSTRUMENT_TYPES = _csv("OHLCV_INSTRUMENT_TYPES", "AMXIDX,FUTIDX,OPTIDX")
 NAMES = _csv("OHLCV_NAMES", "NIFTY,BANKNIFTY,SENSEX,BANKEX")
 SYMBOLS = _csv("OHLCV_SYMBOLS")
 

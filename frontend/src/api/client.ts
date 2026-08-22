@@ -49,6 +49,13 @@ async function request<T>(
       : res.statusText
     throw new Error(msg)
   }
+  // FastAPI routes in this app catch their own exceptions and return
+  // {status: "error", message: "..."} with HTTP 200, so a successful
+  // fetch does not imply a successful response — check the envelope too.
+  const envelope = json as { status?: string; message?: string }
+  if (envelope.status === 'error') {
+    throw new Error(envelope.message || 'Request failed')
+  }
   return json as T
 }
 
@@ -60,6 +67,7 @@ export const api = {
     instrument_type?: string
     exchange?: string
     search?: string
+    is_active?: boolean
     page?: number
     page_size?: number
   }) => {
@@ -67,6 +75,7 @@ export const api = {
     if (params?.instrument_type) sp.set('instrument_type', params.instrument_type)
     if (params?.exchange) sp.set('exchange', params.exchange)
     if (params?.search) sp.set('search', params.search)
+    if (params?.is_active !== undefined) sp.set('is_active', String(params.is_active))
     if (params?.page) sp.set('page', String(params.page))
     if (params?.page_size) sp.set('page_size', String(params.page_size ?? 50))
     const q = sp.toString()

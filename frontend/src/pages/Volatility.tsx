@@ -4,17 +4,12 @@
  * IV / RV Volatility Dashboard.
  *
  * Data flow:
- *   1. User picks a futures symbol (e.g. NIFTY30MAR26FUT)
+ *   1. User picks a futures or option symbol (e.g. NIFTY30MAR26FUT,
+ *      NIFTY25AUG2624300CE)
  *   2. Fetches OHLCV from existing api.ohlcv() — your Postgres data
  *   3. Computes RV in-browser via rv.ts utilities
- *   4. IV panel shows placeholder until options_collector.py has run
- *
- * Add to App.tsx:
- *   import Volatility from './pages/Volatility'
- *   <Route path="/volatility" element={<Volatility />} />
- *
- * Add to Layout.tsx nav:
- *   { to: '/volatility', label: 'Volatility' }
+ *   4. For options, fetches the IV chain for the instrument's own expiry
+ *      and looks up its own strike/CE-PE row for real IV and VRP (IV-RV)
  */
 
 import { useEffect, useState, useCallback } from "react";
@@ -30,7 +25,7 @@ import {
   ReferenceLine,
 } from "recharts";
 import { api } from "../api/client";
-import type { OHLCVCandle, Instrument } from "../api/types";
+import type { OHLCVCandle, Instrument, IVChainRow } from "../api/types";
 import {
   rollingRV,
   currentRV,
@@ -81,9 +76,6 @@ function formatOptionLabel(inst: Instrument): string {
 
 // Placeholder spot price — replace with live tick feed when available
 const PLACEHOLDER_SPOT = 24832.0;
-
-// IV placeholder — remove once options_collector.py is running
-const IV_PLACEHOLDER = null as null; // will be: { atm_iv: 0.142, pcr: 1.1, ... }
 
 // ── Colour tokens (mirror your index.css) ───────────────────────────────────
 const C = {
@@ -171,33 +163,13 @@ function RVTooltip({
   );
 }
 
-// ── IV Placeholder Panel ──────────────────────────────────────────────────────
-function IVPlaceholderPanel() {
+// ── IV Unavailable Panel ────────────────────────────────────────────────────
+function IVUnavailablePanel({ reason }: { reason: string }) {
   return (
     <div className="card vol-iv-placeholder">
       <div className="vol-iv-placeholder-icon">⌛</div>
-      <div className="vol-iv-placeholder-title">
-        Options data not yet available
-      </div>
-      <p className="vol-iv-placeholder-body">
-        Implied Volatility requires live option chain snapshots from{" "}
-        <code>options_collector.py</code>. Once it has run for at least one
-        market session, IV will appear here automatically.
-      </p>
-      <div className="vol-iv-placeholder-checklist">
-        {[
-          ["✓", C.accent, "Options collector code built"],
-          ["✓", C.accent, "Schema ready (option_chain_snapshot)"],
-          ["✓", C.accent, "IV / Greeks computation implemented"],
-          ["○", C.muted, "Run options_collector.py for ≥1 session"],
-          ["○", C.muted, "Accumulate 10–15 days for baselines"],
-        ].map(([icon, color, text], i) => (
-          <div key={i} className="vol-iv-checklist-row">
-            <span style={{ color: color as string }}>{icon}</span>
-            <span style={{ color: C.muted }}>{text}</span>
-          </div>
-        ))}
-      </div>
+      <div className="vol-iv-placeholder-title">Implied Volatility unavailable</div>
+      <p className="vol-iv-placeholder-body">{reason}</p>
     </div>
   );
 }
@@ -249,10 +221,16 @@ export default function Volatility() {
   const [error, setError] = useState<string | null>(null);
   const [spot, setSpot] = useState<number>(PLACEHOLDER_SPOT);
 
+  // IV — only meaningful for OPTIDX/OPTSTK instruments. Fetches the chain
+  // for the selected instrument's own expiry, then looks up its own row.
+  const [ivRow, setIvRow] = useState<IVChainRow | null>(null);
+  const [ivLoading, setIvLoading] = useState(false);
+  const [ivError, setIvError] = useState<string | null>(null);
+
   // Load instruments list for the selector (re-fetches when type changes)
   useEffect(() => {
     api
-      .instruments({ instrument_type: instType, page_size: isOption ? 200 : 50 })
+      .instruments({ instrument_type: instType, is_active: true, page_size: isOption ? 200 : 50 })
       .then((r) => {
         const list = r.data ?? [];
         setInstruments(list);
@@ -286,6 +264,36 @@ export default function Volatility() {
     loadCandles();
   }, [loadCandles]);
 
+  // Load IV for the selected option: fetch the chain for its expiry, then
+  // find this instrument's own strike/CE-PE row.
+  useEffect(() => {
+    setIvRow(null);
+    setIvError(null);
+
+    if (!isOption || !selectedInstrument) return;
+    if (instType !== "OPTIDX") {
+      // /volatility/chain only covers index options today (OPTIDX).
+      setIvError("IV is only available for index options (OPTIDX) right now.");
+      return;
+    }
+    if (!selectedInstrument.expiry) {
+      setIvError("Selected option has no expiry on record.");
+      return;
+    }
+
+    const expiry = selectedInstrument.expiry.slice(0, 10); // YYYY-MM-DD
+    setIvLoading(true);
+    api
+      .volatilityChain(expiry)
+      .then((r) => {
+        const row = r.data?.chain.find((c) => c.strike === selectedInstrument.strike) ?? null;
+        setIvRow(row);
+        if (!row) setIvError("No IV data for this strike/expiry yet.");
+      })
+      .catch((e) => setIvError(e instanceof Error ? e.message : "Failed to load IV"))
+      .finally(() => setIvLoading(false));
+  }, [isOption, instType, selectedInstrument]);
+
   // ── Computed values ─────────────────────────────────────────────────────
 
   const rvCurrent = currentRV(candles, method, window_);
@@ -303,10 +311,12 @@ export default function Volatility() {
       [rvLabel(method)]: p.rv_pct,
     }));
 
+  const optType = optionTypeBadge(symbol);
+  const ivPct = ivRow ? (optType === "PE" ? ivRow.pe_iv : ivRow.ce_iv) : null;
+  const ivDecimal = ivPct != null ? ivPct / 100 : null;
+
   const vrp =
-    IV_PLACEHOLDER != null && rvCurrent != null
-      ? (IV_PLACEHOLDER as number) - rvCurrent
-      : null;
+    ivDecimal != null && rvCurrent != null ? ivDecimal - rvCurrent : null;
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -334,12 +344,14 @@ export default function Volatility() {
         <div>
           <h1 className="vol-title">Volatility Dashboard</h1>
           <p className="vol-subtitle">
-            Realized &amp; Implied Volatility · 5-min OHLCV · Nifty Futures
+            Realized &amp; Implied Volatility · 5-min OHLCV · Nifty Futures &amp; Options
           </p>
         </div>
         <div className="vol-header-badge">
           <span style={{ color: C.warn }}>◆</span>
-          <span style={{ color: C.muted }}>Spot (placeholder)</span>
+          <span style={{ color: C.muted }}>
+            {candles.length > 0 ? "Last close" : "Spot (placeholder)"}
+          </span>
           <span
             className="mono"
             style={{ color: C.text, fontSize: "1.1rem", fontWeight: 700 }}
@@ -494,12 +506,16 @@ export default function Volatility() {
           loading={loading}
         />
         <StatCard
-          label="IV ATM (Implied Vol)"
-          value="—"
-          sub="Awaiting options data"
-          color={C.muted}
-          badge={{ text: "Pending", kind: "warn" }}
-          loading={false}
+          label={`IV${optType ? ` ${optType}` : ""} (Implied Vol)`}
+          value={ivPct != null ? `${ivPct.toFixed(2)}%` : "—"}
+          sub={
+            !isOption
+              ? "Select an option to see IV"
+              : ivError ?? (ivPct != null ? "From latest option close" : "No IV yet")
+          }
+          color={ivPct != null ? C.blue : C.muted}
+          badge={!isOption ? undefined : ivPct != null ? undefined : { text: "N/A", kind: "warn" }}
+          loading={ivLoading}
         />
         <StatCard
           label="VRP (IV − RV)"
@@ -509,10 +525,10 @@ export default function Volatility() {
               ? vrp > 0
                 ? "Options expensive vs realised"
                 : "Options cheap vs realised"
-              : "Available once IV is live"
+              : "Needs both IV and RV"
           }
           color={vrp != null ? (vrp > 0 ? C.warn : C.accent) : C.muted}
-          loading={loading}
+          loading={loading || ivLoading}
         />
         <StatCard
           label="Candles loaded"
@@ -755,14 +771,19 @@ export default function Volatility() {
         </div>
       )}
 
-      {/* ── IV Panel ── */}
-      <div className="vol-section">
-        <SectionHead
-          title="Implied Volatility"
-          sub="IV · IV Rank · IV Skew · PCR · Max Pain"
-        />
-        <IVPlaceholderPanel />
-      </div>
+      {/* ── IV Panel (only when there's nothing to show in the stat card) ── */}
+      {(!isOption || (ivPct == null && !ivLoading)) && (
+        <div className="vol-section">
+          <SectionHead title="Implied Volatility" sub="Nifty index options only" />
+          <IVUnavailablePanel
+            reason={
+              !isOption
+                ? "Select an index option (OPTIDX) instrument above to see its implied volatility."
+                : ivError ?? "No implied volatility available for this strike/expiry yet."
+            }
+          />
+        </div>
+      )}
     </div>
   );
 }

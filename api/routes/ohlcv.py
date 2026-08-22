@@ -56,7 +56,10 @@ def get_ohlcv(
             )
             total = cur.fetchone()[0]
 
-            # Get paginated OHLCV data
+            # Page 1 is the most recent candles in range, not the oldest:
+            # order DESC to paginate backward from "now", then reverse the
+            # page back to chronological order below (the chart component
+            # requires ascending timestamps).
             offset = (page - 1) * page_size
             cur.execute(
                 """
@@ -65,12 +68,13 @@ def get_ohlcv(
                 WHERE instrument_id = %s
                   AND timestamp >= %s
                   AND timestamp <= %s
-                ORDER BY timestamp ASC
+                ORDER BY timestamp DESC
                 LIMIT %s OFFSET %s
                 """,
                 (instrument_id, from_date, to_date, page_size, offset)
             )
             rows = cur.fetchall()
+            rows.reverse()
 
         candles = [
             OHLCVCandle(

@@ -161,10 +161,10 @@ export default function OHLCV() {
           {total > 0 && (
             <div style={{ marginTop: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
               <span className="mono" style={{ color: 'var(--text-muted)' }}>
-                {total} candles · page {page} of {totalPages}
+                {total} candles · page {page} of {totalPages} (page 1 = most recent)
               </span>
-              <button className="btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Previous</button>
-              <button className="btn" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
+              <button className="btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>Newer</button>
+              <button className="btn" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>Older</button>
             </div>
           )}
         </>
