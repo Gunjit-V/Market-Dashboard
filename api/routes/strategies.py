@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 
-from api.dependencies import get_db
+from api.dependencies import get_db, require_api_key
 from api.models.schemas import BacktestRequest, Response
 
 router = APIRouter()
@@ -166,7 +166,7 @@ def _run_backtest_task(req: BacktestRequest) -> None:
         pass
 
 
-@router.post("/backtests/run", response_model=Response)
+@router.post("/backtests/run", response_model=Response, dependencies=[Depends(require_api_key)])
 def trigger_backtest(req: BacktestRequest, background_tasks: BackgroundTasks):
     """Kick off a backtest in the background. Poll GET /strategies/{id}/backtests
     for results, or GET /strategies to find the strategy_id first.

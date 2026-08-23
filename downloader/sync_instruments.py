@@ -128,7 +128,8 @@ def upsert_instruments(conn, df: pd.DataFrame):
             instrument_type = EXCLUDED.instrument_type,
             expiry = EXCLUDED.expiry,
             strike = EXCLUDED.strike,
-            lot_size = EXCLUDED.lot_size
+            lot_size = EXCLUDED.lot_size,
+            updated_at = CURRENT_TIMESTAMP
     """
 
     print(f"Upserting {len(records)} instruments into the database...")

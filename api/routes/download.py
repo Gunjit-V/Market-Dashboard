@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query, BackgroundTasks
 from typing import Optional
-from api.dependencies import get_db
+from api.dependencies import get_db, require_api_key
 from api.models.schemas import Response, PaginatedResponse, DownloadLog, DownloadTriggerRequest
 
 router = APIRouter()
@@ -251,7 +251,7 @@ def run_download(instrument_types: list, days: int, timeframe: str = "5m"):
     )
 
 
-@router.post("/trigger", response_model=Response)
+@router.post("/trigger", response_model=Response, dependencies=[Depends(require_api_key)])
 def trigger_download(
     request: DownloadTriggerRequest,
     background_tasks: BackgroundTasks,

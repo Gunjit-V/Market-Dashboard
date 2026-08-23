@@ -1,11 +1,37 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api/client'
-import type { DownloadStatusData } from '../api/types'
+import type { DownloadStatusData, SchedulerHealthData } from '../api/types'
+
+const SERVICE_LABELS: Record<string, string> = {
+  tick_downloader: 'Tick downloader',
+  ohlcv_scheduler: 'OHLCV scheduler',
+  instrument_sync_scheduler: 'Instrument sync',
+  paper_trading_scheduler: 'Paper trading',
+}
+
+const STATUS_COLOR: Record<string, string> = {
+  ok: 'var(--accent)',
+  stale: 'var(--error)',
+  unknown: 'var(--text-muted)',
+}
+
+function formatMinutesAgo(minutes: number | null): string {
+  if (minutes === null) return 'never'
+  if (minutes < 1) return 'just now'
+  if (minutes < 60) return `${Math.round(minutes)}m ago`
+  const hours = minutes / 60
+  if (hours < 24) return `${hours.toFixed(1)}h ago`
+  return `${(hours / 24).toFixed(1)}d ago`
+}
+
+const SCHEDULER_POLL_MS = 60_000
 
 export default function Dashboard() {
   const [health, setHealth] = useState<{ api: string; database: string; postgres_version?: string } | null>(null)
   const [downloadStatus, setDownloadStatus] = useState<DownloadStatusData | null>(null)
+  const [schedulerHealth, setSchedulerHealth] = useState<SchedulerHealthData | null>(null)
+  const [schedulerError, setSchedulerError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -26,6 +52,25 @@ export default function Dashboard() {
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const load = () => {
+      api
+        .schedulerHealth()
+        .then((res) => {
+          if (cancelled) return
+          setSchedulerHealth(res.data ?? null)
+          setSchedulerError(null)
+        })
+        .catch((e) => {
+          if (!cancelled) setSchedulerError(e instanceof Error ? e.message : 'Failed to load')
+        })
+    }
+    load()
+    const interval = setInterval(load, SCHEDULER_POLL_MS)
+    return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
   if (loading) return <div className="page"><div className="loading">Loading…</div></div>
@@ -73,6 +118,39 @@ export default function Dashboard() {
             </span>
           )}
         </div>
+      </div>
+      <div style={{ marginTop: '1.5rem' }}>
+        <h2 style={{ fontSize: '1.05rem', marginBottom: '0.75rem' }}>Background services</h2>
+        {schedulerError && <div className="error-msg">{schedulerError}</div>}
+        {schedulerHealth && (
+          <>
+            <div className="mono" style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+              Market {schedulerHealth.market_open ? 'open' : 'closed'} · checked {new Date(schedulerHealth.checked_at).toLocaleTimeString()}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '1rem' }}>
+              {Object.entries(schedulerHealth.services).map(([key, svc]) => (
+                <div key={key} className="card">
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+                    <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>{SERVICE_LABELS[key] ?? key}</span>
+                    <span
+                      title={svc.status}
+                      style={{
+                        width: '0.6rem',
+                        height: '0.6rem',
+                        borderRadius: '50%',
+                        background: STATUS_COLOR[svc.status] ?? 'var(--text-muted)',
+                        display: 'inline-block',
+                      }}
+                    />
+                  </div>
+                  <div className="mono" style={{ fontSize: '1rem' }}>
+                    {formatMinutesAgo(svc.minutes_ago)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
       <div style={{ marginTop: '1.5rem' }}>
         <Link to="/instruments" className="btn btn-primary">Browse instruments</Link>

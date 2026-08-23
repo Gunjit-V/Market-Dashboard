@@ -72,6 +72,18 @@ export interface DownloadStatusData {
   instruments_with_no_data?: number
 }
 
+export interface SchedulerServiceHealth {
+  last_seen: string | null
+  minutes_ago: number | null
+  status: 'ok' | 'stale' | 'unknown'
+}
+
+export interface SchedulerHealthData {
+  market_open: boolean
+  checked_at: string
+  services: Record<string, SchedulerServiceHealth>
+}
+
 // ─── Volatility API types ────────────────────────────────────────────────────
 
 export interface ATMInfo {

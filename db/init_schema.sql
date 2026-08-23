@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS instruments (
     lot_size            INTEGER,
     is_active           BOOLEAN DEFAULT FALSE,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(token, exchange)
 );
 

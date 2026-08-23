@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api.routes import health, instruments, ohlcv, ticks, download, volatility, strategies, paper_trading
@@ -8,10 +10,18 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# CORS — allows React frontend to talk to this API
+# CORS — allows the frontend to talk to this API. Defaults to local dev
+# origins; set CORS_ALLOWED_ORIGINS (comma-separated) to restrict this once
+# the frontend is deployed somewhere other than localhost.
+_default_origins = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173"
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", _default_origins).split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten this when moving to production
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

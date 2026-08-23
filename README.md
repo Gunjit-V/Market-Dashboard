@@ -189,6 +189,25 @@ PAPER_VRP_STRIKE_RANGE=2
 Results are visible in the frontend under **Strategies** (backtests) and
 **Paper Trading** (live virtual positions and PnL).
 
+## 🩺 Scheduler health & API access
+
+`GET /health/schedulers` reports a last-seen timestamp and `ok`/`stale`
+status for each background service (`tick_downloader`, `ohlcv_scheduler`,
+`instrument_sync_scheduler`, `paper_trading_scheduler`), derived from the
+latest row each one writes (`tick_data`, `download_log`, `instruments`,
+`equity_curve`). A service is only flagged `stale` during market hours, so
+after-hours quiet is not treated as a failure. The Dashboard page polls this
+every 60s and shows a status dot per service — this is what would have
+surfaced the tick-downloader outage (dead silently for ~5 months, see git
+history) immediately instead of by accident.
+
+Mutating endpoints (`POST /download/trigger`, `POST /strategies/backtests/run`)
+are gated behind an optional `X-API-Key` header, checked against `API_KEY` in
+`.env`. Leaving `API_KEY` unset disables the check (local dev default); set
+it before exposing the API beyond localhost, and set `VITE_API_KEY` in the
+frontend's environment to match. CORS origins default to local dev ports and
+can be restricted via `CORS_ALLOWED_ORIGINS` (comma-separated) once deployed.
+
 ## 🐳 Running with Docker
 
 You can easily run the entire stack (Database, API, Dashboard, Tick Downloader, and Frontend) using Docker Compose.

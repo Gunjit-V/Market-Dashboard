@@ -6,6 +6,7 @@ import type {
   DownloadLog,
   DownloadTriggerRequest,
   DownloadStatusData,
+  SchedulerHealthData,
   ATMInfo,
   IVChainData,
   IVHistoryData,
@@ -19,6 +20,9 @@ import type {
 } from './types'
 
 const API_BASE = import.meta.env.VITE_API_URL ?? '/api'
+// Only needed if the API sets API_KEY server-side; unset by default for
+// local dev, where the backend's require_api_key dependency is a no-op.
+const API_KEY = import.meta.env.VITE_API_KEY as string | undefined
 
 async function request<T>(
   path: string,
@@ -29,6 +33,7 @@ async function request<T>(
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(API_KEY ? { 'X-API-Key': API_KEY } : {}),
       ...options?.headers,
     },
   })
@@ -69,6 +74,9 @@ async function request<T>(
 export const api = {
   health: () =>
     request<ApiResponse<{ api: string; database: string; postgres_version?: string }>>('/health'),
+
+  schedulerHealth: () =>
+    request<ApiResponse<SchedulerHealthData>>('/health/schedulers'),
 
   instruments: (params?: {
     instrument_type?: string

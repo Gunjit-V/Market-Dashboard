@@ -10,6 +10,7 @@ export default function Instruments() {
   const [instrumentType, setInstrumentType] = useState('')
   const [exchange, setExchange] = useState('')
   const [search, setSearch] = useState('')
+  const [activeOnly, setActiveOnly] = useState(true)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -23,6 +24,7 @@ export default function Instruments() {
         instrument_type: instrumentType || undefined,
         exchange: exchange || undefined,
         search: search || undefined,
+        is_active: activeOnly ? true : undefined,
         page,
         page_size: 50,
       })
@@ -38,7 +40,7 @@ export default function Instruments() {
         if (!cancelled) setLoading(false)
       })
     return () => { cancelled = true }
-  }, [instrumentType, exchange, search, page])
+  }, [instrumentType, exchange, search, activeOnly, page])
 
   const totalPages = meta ? Math.ceil(meta.total / meta.page_size) : 0
 
@@ -68,6 +70,14 @@ export default function Instruments() {
             onChange={(e) => { setExchange(e.target.value); setPage(1); }}
             style={{ width: '120px' }}
           />
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+            <input
+              type="checkbox"
+              checked={activeOnly}
+              onChange={(e) => { setActiveOnly(e.target.checked); setPage(1); }}
+            />
+            Active only
+          </label>
           <button className="btn" onClick={() => setPage(1)}>Apply</button>
         </div>
       </div>
