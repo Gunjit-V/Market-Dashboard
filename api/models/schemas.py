@@ -69,7 +69,7 @@ class DownloadTriggerRequest(BaseModel):
     days: int = 1
 
 
-# ─── Strategies / Backtesting / Paper Trading ─────────────────────────────────
+# ─── Strategies / Backtesting ──────────────────────────────────────────────────
 
 class Strategy(BaseModel):
     id: int
@@ -142,31 +142,3 @@ class EquityPoint(BaseModel):
     cash: float
     open_positions_value: float
     drawdown_pct: Optional[float] = None
-
-
-class SignalRow(BaseModel):
-    id: int
-    strategy_id: int
-    strategy_name: Optional[str] = None
-    instrument_id: Optional[int] = None
-    symbol: Optional[str] = None
-    timestamp: datetime
-    signal_type: str
-    reason: Optional[str] = None
-    metrics: Optional[dict] = None
-    acted_on: bool
-
-
-class PaperTradingSummary(BaseModel):
-    strategy_id: int
-    strategy_name: str
-    starting_capital: float
-    current_equity: float
-    total_pnl: float
-    total_pnl_pct: float
-    open_trades: int
-    closed_trades: int
-    winning_trades: int
-    losing_trades: int
-    win_rate_pct: float
-    max_drawdown_pct: float

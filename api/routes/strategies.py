@@ -1,8 +1,7 @@
 """
-Strategies API — registry, backtest triggering/results, live paper-trading
-performance. Backed by backtest.runner and backtest.paper_trading, which own
-the actual simulation logic; this module is a thin DB read/write layer plus
-a way to kick off a backtest run.
+Strategies API — registry, backtest triggering/results. Backed by
+backtest.runner, which owns the actual simulation logic; this module is a
+thin DB read/write layer plus a way to kick off a backtest run.
 """
 
 from datetime import datetime, timedelta

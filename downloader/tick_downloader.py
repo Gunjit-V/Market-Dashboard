@@ -447,9 +447,23 @@ def on_data(wsapp, message, tick_queue: Queue):
             tick_queue.put(tick)
 
 
-def on_error(wsapp, error):
-    """Log WebSocket errors."""
+def on_error(wsapp, error, state: dict):
+    """Log WebSocket errors.
+
+    SmartWebSocketV2._on_error calls close_connection() (killing the socket)
+    once MAX_RETRY_ATTEMPT is exhausted, but — unlike a normal disconnect —
+    never calls on_close afterward. It also invokes self.on_error(...)
+    directly at that point rather than through its usual (wsapp, error)
+    dispatch, passing "Max retry attempt reached" as the first positional
+    arg — i.e. in our `wsapp` slot, not `error`. Without checking both
+    slots, state["running"] stays True forever: the main thread's
+    `while state["running"]: sleep(1)` loop spins on a dead socket for the
+    rest of the day, and run_forever() never gets a chance to reconnect.
+    """
     print(f"WebSocket error: {error}")
+    if "Max retry attempt reached" in (str(wsapp), str(error)):
+        print("Max retry attempts reached; ending session so run_forever() can reconnect.")
+        state["running"] = False
 
 
 def on_close(wsapp, state: dict):
@@ -621,7 +635,7 @@ def start_realtime_tick_collection(
     )
     sws.on_open = lambda wsapp: on_open(wsapp, sws, token_list, mode)
     sws.on_data = lambda wsapp, message: on_data(wsapp, message, tick_queue)
-    sws.on_error = on_error
+    sws.on_error = lambda wsapp, error: on_error(wsapp, error, state)
     sws.on_close = lambda wsapp: on_close(wsapp, state)
 
     # Step 9: Run WebSocket in background thread

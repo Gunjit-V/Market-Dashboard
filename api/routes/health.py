@@ -18,16 +18,12 @@ STALE_THRESHOLD_MINUTES = {
     "tick_downloader": 10,
     "ohlcv_scheduler": 15,
     "instrument_sync_scheduler": 24 * 60,  # runs once/day before market open
-    "paper_trading_scheduler": 15,
 }
 
 SERVICE_QUERIES = {
     "tick_downloader": "SELECT MAX(timestamp) FROM tick_data",
     "ohlcv_scheduler": "SELECT MAX(last_run_at) FROM download_log",
     "instrument_sync_scheduler": "SELECT MAX(updated_at) FROM instruments",
-    "paper_trading_scheduler": (
-        "SELECT MAX(timestamp) FROM equity_curve WHERE is_paper = TRUE"
-    ),
 }
 
 

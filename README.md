@@ -148,7 +148,7 @@ To run it outside Docker:
 python -m scheduler.instrument_sync_scheduler
 ```
 
-### 6. Strategy backtesting and paper trading
+### 6. Strategy backtesting
 The `backtest/` package holds the simulation engine (`backtest/engine.py`),
 realized-volatility estimators (`backtest/rv.py`, mirroring
 `frontend/src/utils/rv.ts`), and two strategies:
@@ -162,12 +162,8 @@ realized-volatility estimators (`backtest/rv.py`, mirroring
     realized vol), one strategy instance per option symbol.
 
 Both share one `Simulator`/fill/PnL model, backed by the `strategies`,
-`backtest_runs`, `trades`, `equity_curve`, and `signals` tables (see
-`db/init_schema.sql`). Backtests replay history (`backtest/runner.py`);
-live paper trading (`backtest/paper_trading.py`) evaluates the same
-strategies forward from the latest bar, with state reconstructed from
-`trades`/`equity_curve` on each run rather than kept in memory — no real
-orders are ever placed.
+`backtest_runs`, `trades`, and `equity_curve` tables (see
+`db/init_schema.sql`). Backtests replay history (`backtest/runner.py`).
 
 Run a backtest via the API:
 ```bash
@@ -176,26 +172,15 @@ curl -X POST http://localhost:8000/strategies/backtests/run \
   -d '{"strategy":"rv_breakout","symbol":"Nifty 50"}'
 ```
 
-The Docker stack includes a `paper-trading-scheduler` service that evaluates
-`rv_breakout` on `PAPER_RV_SYMBOLS` and `vrp_reversion` on Nifty options
-within `PAPER_VRP_STRIKE_RANGE` strikes of the current ATM, once per 5-min
-bar during market hours:
-```env
-PAPER_RV_SYMBOLS=Nifty 50
-PAPER_VRP_UNDERLYING=NIFTY25AUG26FUT
-PAPER_VRP_STRIKE_RANGE=2
-```
-
-Results are visible in the frontend under **Strategies** (backtests) and
-**Paper Trading** (live virtual positions and PnL).
+Results are visible in the frontend under **Strategies**.
 
 ## 🩺 Scheduler health & API access
 
 `GET /health/schedulers` reports a last-seen timestamp and `ok`/`stale`
 status for each background service (`tick_downloader`, `ohlcv_scheduler`,
-`instrument_sync_scheduler`, `paper_trading_scheduler`), derived from the
-latest row each one writes (`tick_data`, `download_log`, `instruments`,
-`equity_curve`). A service is only flagged `stale` during market hours, so
+`instrument_sync_scheduler`), derived from the
+latest row each one writes (`tick_data`, `download_log`, `instruments`).
+A service is only flagged `stale` during market hours, so
 after-hours quiet is not treated as a failure. The Dashboard page polls this
 every 60s and shows a status dot per service — this is what would have
 surfaced the tick-downloader outage (dead silently for ~5 months, see git

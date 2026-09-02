@@ -49,6 +49,7 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT:-5432}/${DB_NAME}
+      - TZ=Asia/Kolkata
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -74,21 +75,6 @@ services:
     container_name: market-instrument-sync-scheduler
     restart: unless-stopped
     command: python -m scheduler.instrument_sync_scheduler
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT:-5432}/${DB_NAME}
-      TZ: Asia/Kolkata
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-  paper-trading-scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: market-paper-trading-scheduler
-    restart: unless-stopped
-    command: python -m scheduler.paper_trading_scheduler
     env_file:
       - .env
     environment:

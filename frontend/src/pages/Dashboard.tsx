@@ -7,7 +7,6 @@ const SERVICE_LABELS: Record<string, string> = {
   tick_downloader: 'Tick downloader',
   ohlcv_scheduler: 'OHLCV scheduler',
   instrument_sync_scheduler: 'Instrument sync',
-  paper_trading_scheduler: 'Paper trading',
 }
 
 const STATUS_COLOR: Record<string, string> = {

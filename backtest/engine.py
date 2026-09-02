@@ -1,15 +1,14 @@
 """
-Core backtest/paper-trading simulation engine.
+Core backtest simulation engine.
 
 Design: a Strategy is a pure function of a rolling window of candles that
 either does nothing or returns a StrategyAction (open/close a position). The
 Simulator owns capital, open positions, and fills — it is driven bar-by-bar
-either by historical replay (backtest.runner) or by a live scheduler
-(scheduler.paper_trading_scheduler), so both paths share one fill/PnL model
-and one database representation (the `trades` / `equity_curve` tables).
+by historical replay (backtest.runner), with one fill/PnL model and one
+database representation (the `trades` / `equity_curve` tables).
 
 Position sizing here is intentionally simple (fixed notional per trade) —
-this is a signal/paper-trading demonstration, not a production risk engine.
+this is a signal/backtesting demonstration, not a production risk engine.
 """
 
 from __future__ import annotations
@@ -35,7 +34,7 @@ class Strategy(Protocol):
     """A strategy evaluates the latest window of candles for one instrument
     and returns a signal. Strategies are stateless between calls — any state
     needed (e.g. "are we currently in a position") is passed in via
-    `in_position`, since the Simulator/PaperTradingEngine owns positions.
+    `in_position`, since the Simulator owns positions.
     """
 
     name: str
