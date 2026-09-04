@@ -25,13 +25,17 @@ A comprehensive algorithmic trading and market data collection platform designed
 ```bash
 .
 ├── api/             # FastAPI application and route definitions
+├── backtest/        # Simulation engine, strategies, paper trading
 ├── dashboard/       # Simple WebSocket-powered live dashboard client & server
 ├── data/            # Local data storage and exports
 ├── db/              # Database models, schemas, and connection utilities
+├── docs/            # Architecture, data contracts, validation, point-in-time semantics
 ├── downloader/      # Scripts for tick collection, OHLCV fetching, and instruments loading
 ├── frontend/        # React frontend application
 ├── logs/            # Application and script log files
+├── marketdata/      # Data contracts, validation, quality reporting, dataset access
 ├── scheduler/       # Cron jobs and automated pipeline scripts
+├── tests/           # Pytest suite (no database or network required)
 └── .env             # Environment variables (API keys, DB credentials)
 ```
 
@@ -207,6 +211,53 @@ are gated behind an optional `X-API-Key` header, checked against `API_KEY` in
 it before exposing the API beyond localhost, and set `VITE_API_KEY` in the
 frontend's environment to match. CORS origins default to local dev ports and
 can be restricted via `CORS_ALLOWED_ORIGINS` (comma-separated) once deployed.
+
+## 📐 Data contracts, validation & quality reporting
+
+The `marketdata/` package holds the market-data foundation: the canonical data
+contracts, a non-destructive validation layer, data-quality reporting and a
+point-in-time-aware read interface. It depends on nothing outside the Python
+standard library, so it imports and tests without a database or the Angel One
+SDK.
+
+Validation **never modifies market data**. The default behaviour is
+detect → report; rejecting or quarantining records is opt-in.
+
+Print a data-quality report for an instrument:
+```bash
+python -m marketdata.report --instrument "Nifty 50" \
+    --from 2026-01-01 --to 2026-09-01 --timeframes 1m,5m
+```
+Exit code is 0 (PASS), 1 (WARNING), 2 (FAIL) or 3 (usage error). The same
+report is available read-only over HTTP at `GET /quality/{symbol}`.
+
+Read history with the point-in-time cut-off enforced:
+```python
+from marketdata.access import get_market_data
+
+bars = get_market_data(conn, "Nifty 50", start, end, "5m", as_of=decision_time)
+```
+
+Optional ingestion settings (defaults preserve the pre-existing behaviour
+exactly — every candle is still inserted, unchanged):
+```env
+MARKETDATA_VALIDATION_MODE=report        # or 'reject' to withhold invalid candles
+MARKETDATA_QUARANTINE_FILE=logs/quarantine.jsonl
+```
+
+Run the tests:
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+### Documentation
+
+*   [`docs/current-architecture.md`](docs/current-architecture.md) — the system as it exists today.
+*   [`docs/data-contract.md`](docs/data-contract.md) — canonical schemas for ticks, 1m and 5m OHLCV.
+*   [`docs/validation.md`](docs/validation.md) — validation rules, quality reporting, how to run both.
+*   [`docs/point-in-time-data.md`](docs/point-in-time-data.md) — temporal semantics and leakage rules for future ML work.
+*   [`docs/phase-1-summary.md`](docs/phase-1-summary.md) — what Phase 1 changed, and its known limitations.
 
 ## 🐳 Running with Docker
 

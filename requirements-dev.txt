@@ -1,0 +1,4 @@
+# Development-only dependencies. The runtime requirements are in
+# requirements.txt; the marketdata package and its tests deliberately need
+# nothing beyond the Python standard library.
+pytest==9.1.1

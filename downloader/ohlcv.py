@@ -5,6 +5,11 @@ from dotenv import load_dotenv
 import pyotp
 from SmartApi import SmartConnect
 from db.connection import ConnectionManager
+from marketdata.ingest import (
+    log_screen_result,
+    screen_candles,
+    write_quarantine,
+)
 
 load_dotenv()
 
@@ -34,6 +39,14 @@ INTERVALS = {
     "1m": {"api_interval": "ONE_MINUTE",  "table": "ohlcv_1min", "minutes": 1},
     "5m": {"api_interval": "FIVE_MINUTE", "table": "ohlcv_5min", "minutes": 5},
 }
+
+
+def _interval_label(cfg: dict) -> str:
+    """Reverse-lookup the short interval label for a config dict."""
+    for label, candidate in INTERVALS.items():
+        if candidate is cfg or candidate == cfg:
+            return label
+    raise ValueError(f"Unknown interval config {cfg!r}")
 
 
 def _interval_config(interval: str) -> dict:
@@ -267,11 +280,39 @@ def fetch_candle_data(
 # ── Persist candles ───────────────────────────────────────────────────────────
 
 def save_candles_to_db(
-    conn, instrument_id: int, candles: list, table: str
+    conn, instrument_id: int, candles: list, table: str, interval: str = "5m"
 ) -> tuple[int, int]:
-    """Save candle data to *table* (``ohlcv_1min`` or ``ohlcv_5min``)."""
+    """Save candle data to *table* (``ohlcv_1min`` or ``ohlcv_5min``).
+
+    Candles are screened against the data contract first (see
+    ``marketdata/ingest.py``).  In the default ``report`` mode this only
+    logs — every candle that would have been inserted before Phase 1 is still
+    inserted, unchanged.  Set ``MARKETDATA_VALIDATION_MODE=reject`` to withhold
+    contract-violating candles instead, optionally writing them to
+    ``MARKETDATA_QUARANTINE_FILE`` for inspection.  Nothing is ever repaired.
+    """
     if not candles:
         return 0, 0
+
+    # Validation must never be able to stop ingestion: if screening itself
+    # fails, fall back to the pre-Phase-1 behaviour of inserting everything.
+    try:
+        screened = screen_candles(
+            candles,
+            instrument_id,
+            interval,
+            normalize_timestamp=normalize_timestamp,
+        )
+        log_screen_result(screened, context=f"{table} instrument_id={instrument_id}")
+        if screened.rejected:
+            write_quarantine(screened, instrument_id, interval)
+            print(
+                f"    Quarantined {len(screened.rejected)} invalid candle(s) "
+                f"({screened.result.by_code()})"
+            )
+        candles = list(screened.accepted)
+    except Exception as e:
+        print(f"    Candle validation skipped ({type(e).__name__}); inserting as-is")
 
     inserted = 0
     skipped = 0
@@ -372,7 +413,7 @@ def download_for_instrument(
 
         if candles:
             inserted, skipped = save_candles_to_db(
-                conn, instrument_id, candles, table
+                conn, instrument_id, candles, table, interval=_interval_label(cfg)
             )
             total_inserted += inserted
             total_skipped += skipped
