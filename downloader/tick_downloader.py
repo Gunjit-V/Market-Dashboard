@@ -314,7 +314,7 @@ def parse_tick(raw: dict, token_map: dict) -> dict | None:
         token                       - instrument token
         last_traded_price           - LTP in paise
         last_traded_quantity        - last traded quantity
-        average_trade_price         - VWAP in paise
+        average_traded_price        - VWAP in paise
         volume_trade_for_the_day    - cumulative day volume
         total_buy_quantity          - total pending buy quantity
         total_sell_quantity         - total pending sell quantity
@@ -350,7 +350,7 @@ def parse_tick(raw: dict, token_map: dict) -> dict | None:
             "high":            _paise_to_rupees(raw.get("high_price_of_the_day")),
             "low":             _paise_to_rupees(raw.get("low_price_of_the_day")),
             "close":           _paise_to_rupees(raw.get("closed_price")),
-            "avg_trade_price": _paise_to_rupees(raw.get("average_trade_price")),
+            "avg_trade_price": _paise_to_rupees(raw.get("average_traded_price")),
             "volume":          raw.get("volume_trade_for_the_day"),
             "total_buy_qty":   raw.get("total_buy_quantity"),
             "total_sell_qty":  raw.get("total_sell_quantity"),
