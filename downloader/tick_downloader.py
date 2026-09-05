@@ -3,7 +3,7 @@ import json
 import time
 import math
 import threading
-from datetime import datetime, timedelta, time as clock_time
+from datetime import datetime, timedelta, time as clock_time, timezone
 from queue import Queue, Empty
 from dotenv import load_dotenv
 import pyotp
@@ -304,6 +304,64 @@ def _parse_best5(raw_list: list) -> list | None:
         return None
 
 
+# Angel One publishes feed clocks as epoch integers in IST terms. Interpreting
+# them with a bare datetime.fromtimestamp() would bind the value to whatever
+# timezone the *collector process* happens to run in — IST on the native host,
+# but UTC inside the tick-downloader container (docker-compose.yml sets TZ only
+# for the scheduler services). Converting through an explicit IST offset makes
+# the stored naive timestamp mean the same thing wherever the collector runs.
+IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+
+def _epoch_to_ist(value, unit_divisor: float) -> datetime | None:
+    """Convert an epoch integer to a naive IST datetime.
+
+    Returns None for missing/zero/unparseable values. Zero matters: Angel One
+    sends last_traded_timestamp = 0 for an instrument that has not traded yet,
+    and that must not be mistaken for midnight 1970.
+    """
+    if value is None:
+        return None
+    try:
+        epoch = float(value)
+    except (TypeError, ValueError):
+        return None
+    if epoch <= 0:
+        return None
+
+    try:
+        aware = datetime.fromtimestamp(epoch / unit_divisor, tz=IST_TZ)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return aware.replace(tzinfo=None)
+
+
+def resolve_tick_timestamp(raw: dict) -> tuple[datetime, str]:
+    """Pick the best available event time for a tick, and say where it came from.
+
+    Preference order:
+
+    1. ``exchange_timestamp`` (milliseconds) — the exchange's own feed clock.
+       Present in every subscription mode, populated on every packet, and
+       measured at ~1.8s behind local receipt, so it is not a delayed field.
+    2. ``last_traded_timestamp`` (seconds) — SNAP_QUOTE only, and 0 until the
+       instrument actually trades. Accurate when present, but far too sparse
+       to be the primary source.
+    3. The collector's wall clock — a last resort. It is processing time, not
+       event time, so the caller records that fact rather than silently
+       passing it off as a market timestamp.
+    """
+    exchange_ts = _epoch_to_ist(raw.get("exchange_timestamp"), 1000.0)
+    if exchange_ts is not None:
+        return exchange_ts, "exchange"
+
+    traded_ts = _epoch_to_ist(raw.get("last_traded_timestamp"), 1.0)
+    if traded_ts is not None:
+        return traded_ts, "last_traded"
+
+    return datetime.now(IST_TZ).replace(tzinfo=None), "received"
+
+
 def parse_tick(raw: dict, token_map: dict) -> dict | None:
     """
     Parse a raw SmartWebSocketV2 SNAP_QUOTE tick into our internal format.
@@ -314,7 +372,7 @@ def parse_tick(raw: dict, token_map: dict) -> dict | None:
         token                       - instrument token
         last_traded_price           - LTP in paise
         last_traded_quantity        - last traded quantity
-        average_trade_price         - VWAP in paise
+        average_traded_price        - VWAP in paise
         volume_trade_for_the_day    - cumulative day volume
         total_buy_quantity          - total pending buy quantity
         total_sell_quantity         - total pending sell quantity
@@ -323,7 +381,9 @@ def parse_tick(raw: dict, token_map: dict) -> dict | None:
         low_price_of_the_day        - day low in paise
         closed_price                - previous close in paise
         open_interest               - OI (derivatives only)
-        last_traded_timestamp       - Unix timestamp of actual trade
+        exchange_timestamp          - exchange feed clock, epoch MILLISECONDS
+        last_traded_timestamp       - last trade time, epoch SECONDS (0 until
+                                      the instrument trades; SNAP_QUOTE only)
         best_5_buy_data             - list of top 5 bid levels
         best_5_sell_data            - list of top 5 ask levels
     """
@@ -336,10 +396,8 @@ def parse_tick(raw: dict, token_map: dict) -> dict | None:
         if not ltp or ltp <= 0:
             return None  # Skip invalid ticks
 
-        # Use actual market trade timestamp, not server receive time
-        raw_ts = raw.get("last_traded_timestamp")
-        timestamp = datetime.fromtimestamp(
-            int(raw_ts)) if raw_ts else datetime.now()
+        # Prefer the exchange's own clock over the collector's wall clock.
+        timestamp, time_source = resolve_tick_timestamp(raw)
 
         return {
             "instrument_id":   token_map[token],
@@ -350,13 +408,20 @@ def parse_tick(raw: dict, token_map: dict) -> dict | None:
             "high":            _paise_to_rupees(raw.get("high_price_of_the_day")),
             "low":             _paise_to_rupees(raw.get("low_price_of_the_day")),
             "close":           _paise_to_rupees(raw.get("closed_price")),
-            "avg_trade_price": _paise_to_rupees(raw.get("average_trade_price")),
+            "avg_trade_price": _paise_to_rupees(
+                # The SDK emits "average_traded_price"; the older spelling is
+                # accepted too so nothing breaks if the vendor renames it back.
+                raw.get("average_traded_price", raw.get("average_trade_price"))
+            ),
             "volume":          raw.get("volume_trade_for_the_day"),
             "total_buy_qty":   raw.get("total_buy_quantity"),
             "total_sell_qty":  raw.get("total_sell_quantity"),
             "open_interest":   raw.get("open_interest"),
             "best_5_buy":      _parse_best5(raw.get("best_5_buy_data", [])),
             "best_5_sell":     _parse_best5(raw.get("best_5_sell_data", [])),
+            # Not persisted (no column); used by the collector to report how
+            # many ticks fell back to processing time.
+            "time_source":     time_source,
         }
 
     except Exception as e:
@@ -475,13 +540,18 @@ def db_worker(conn, tick_queue: Queue, token_map: dict, state: dict):
                 tick_buffer.append(parsed)
 
             if len(tick_buffer) >= BATCH_SIZE:
+                fallbacks = sum(
+                    1 for t in tick_buffer if t.get("time_source") == "received"
+                )
                 inserted, skipped = save_ticks_to_db(conn, tick_buffer)
                 state["total_inserted"] += inserted
                 state["total_skipped"] += skipped
+                state["total_time_fallback"] += fallbacks
                 print(
                     f"  Batch inserted: {inserted} | "
                     f"Skipped: {skipped} | "
                     f"Total: {state['total_inserted']}"
+                    + (f" | Clock fallback: {fallbacks}" if fallbacks else "")
                 )
                 tick_buffer = []
 
@@ -600,6 +670,8 @@ def start_realtime_tick_collection(
         "running":        True,
         "total_inserted": 0,
         "total_skipped":  0,
+        # Ticks with no usable exchange clock, which fell back to wall time.
+        "total_time_fallback": 0,
     }
     tick_queue = Queue()
 
@@ -649,6 +721,7 @@ def start_realtime_tick_collection(
         print(f"\nCollection stopped.")
         print(f"Total inserted : {state['total_inserted']}")
         print(f"Total skipped  : {state['total_skipped']}")
+        print(f"Clock fallback : {state['total_time_fallback']}")
 
 
 # ── Query Functions ────────────────────────────────────────────────────────────

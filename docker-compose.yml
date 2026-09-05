@@ -49,6 +49,10 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT:-5432}/${DB_NAME}
+      # Matches the other services. Tick timestamps are now converted through
+      # an explicit IST offset in code, so this is belt-and-braces rather than
+      # load-bearing — it keeps container-local log timestamps readable too.
+      - TZ=Asia/Kolkata
     extra_hosts:
       - "host.docker.internal:host-gateway"
 

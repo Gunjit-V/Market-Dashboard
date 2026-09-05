@@ -187,15 +187,13 @@ failures to inherit.
 
 ## Known limitations
 
-1. **Tick timestamps mix event time, processing time and timezones.**
-   `parse_tick` calls `datetime.fromtimestamp()` with no timezone and falls
-   back to `datetime.now()` when the feed omits `last_traded_timestamp`. The
-   `tick-downloader` compose service sets no `TZ` (unlike the three scheduler
-   services), so in Docker its timestamps are UTC-naive while OHLCV timestamps
-   are IST-naive — a 5h30m mismatch when joining ticks to bars. **Phase 1 adds
-   detection, not a fix**: `out_of_session` warnings flag it. Fixing it changes
-   the meaning of stored data at an undocumented cut-over point and needs a
-   human decision plus a backfill plan. See `docs/point-in-time-data.md` §5.1.
+1. **~~Tick timestamps mix event time, processing time and timezones.~~
+   FIXED** (commit on `fix/tick-timestamp-and-vwap`). The collector now prefers
+   the exchange feed clock and converts through an explicit IST offset; see
+   `docs/point-in-time-data.md` §5.1. Residual limitation: ticks written
+   **before** the fix have `datetime.now()` timestamps in 98.7% of rows and
+   cannot be repaired — the exchange clock was never stored. Identify them with
+   `date_part('microseconds', timestamp) <> 0`.
 2. **The holiday calendar covers 2026 only.** Outside 2026, only weekends are
    known non-trading days, so gap counts are over-stated. The report attaches
    an explicit note; `NSE_HOLIDAYS` extends the calendar without a code change.

@@ -53,14 +53,14 @@ plus day aggregates and the top of the book at that moment.
 |---|---|---|---|---|
 | `id` | `BIGSERIAL` | no | storage | Surrogate key. |
 | `instrument_id` | `INTEGER` | **yes** | derived | FK → `instruments.id`, resolved from the feed token. |
-| `timestamp` | `TIMESTAMP` | **yes** | source | The snapshot's `last_traded_timestamp`. **Falls back to the collector's wall clock when the feed omits it** — see the caveat below. |
+| `timestamp` | `TIMESTAMP` | **yes** | source | The exchange feed clock (`exchange_timestamp`, epoch ms), falling back to `last_traded_timestamp` (epoch s), then to the collector's wall clock as a labelled last resort. See the caveat below. |
 | `ltp` | `DECIMAL(12,2)` | **yes** | source | Last traded price, rupees. Must be > 0; the collector already drops ticks with `ltp <= 0`. |
 | `ltq` | `INTEGER` | no | source | Last traded quantity. |
 | `open` | `DECIMAL(12,2)` | no | source | Day open. |
 | `high` | `DECIMAL(12,2)` | no | source | Day high **so far**, as of this snapshot. |
 | `low` | `DECIMAL(12,2)` | no | source | Day low **so far**, as of this snapshot. |
 | `close` | `DECIMAL(12,2)` | no | source | ⚠️ The **previous day's close** (the feed's `closed_price`), *not* the current price. The column name is misleading and is retained for backward compatibility. |
-| `avg_trade_price` | `DECIMAL(12,2)` | no | source | Day VWAP. |
+| `avg_trade_price` | `DECIMAL(12,2)` | no | source | Day VWAP, from the feed's `average_traded_price`. (Rows written before that field name was corrected are `NULL`.) |
 | `volume` | `BIGINT` | no | source | **Cumulative** traded volume for the day, not per-tick volume. Expected to be non-decreasing within a session and to reset at the next session. |
 | `total_buy_qty` | `BIGINT` | no | source | Total pending buy quantity across the book. |
 | `total_sell_qty` | `BIGINT` | no | source | Total pending sell quantity. |
@@ -82,14 +82,19 @@ plus day aggregates and the top of the book at that moment.
 
 ### Timestamp caveat
 
-`parse_tick` uses `datetime.fromtimestamp(last_traded_timestamp)` — no
-timezone — so the epoch is interpreted in the *collector process's* local
-timezone, and falls back to `datetime.now()` when the field is absent. This
-mixes event time with processing time, and mixes timezones if the collector's
-`TZ` is not IST. Documented in full, with the detection mechanism, in
-`docs/point-in-time-data.md`.
+`resolve_tick_timestamp()` prefers `exchange_timestamp` (epoch **milliseconds**,
+present in every mode) over `last_traded_timestamp` (epoch **seconds**,
+SNAP_QUOTE only and `0` until the instrument trades). Conversion goes through an
+explicit IST offset, so the stored naive value does not depend on the
+collector's timezone.
 
----
+When neither clock is usable the tick carries the collector's wall time and is
+labelled `time_source="received"`; those fallbacks are counted per batch and in
+the session summary. `time_source` is **not** persisted — there is no column for
+it — so for rows already in the table, distinguish them by microseconds:
+feed-derived timestamps land on whole seconds, `datetime.now()` values do not.
+
+Full history and the pre-fix data caveat: `docs/point-in-time-data.md` §5.1.
 
 ## 1-minute OHLCV (`ohlcv_1min`)
 

@@ -18,7 +18,7 @@ database now" is explicit rather than assumed.
 |---|---|---|
 | `ohlcv_1min` | The bar's **opening minute** | Event time |
 | `ohlcv_5min` | The bar's **opening minute** | Event time |
-| `tick_data` | The snapshot's `last_traded_timestamp` | Event time — **with a fallback to processing time**, see §5 |
+| `tick_data` | The exchange feed clock (`exchange_timestamp`), falling back to `last_traded_timestamp` | Event time — with a labelled last-resort fallback to processing time, see §5.1 |
 
 `created_at` on all three tables is **processing time**: when the row was
 inserted. It is the only honest record of when the data became available
@@ -136,45 +136,56 @@ it, and both change if a backfill runs.
 These are **documented, not silently redesigned**. Phase 1 adds detection for
 them and changes no ingestion behaviour.
 
-### 5.1 Tick timestamps mix event time, processing time and timezones
+### 5.1 Tick timestamps — fixed, with a labelled residual fallback
 
-`downloader/tick_downloader.py: parse_tick` does:
+**Resolved.** `downloader/tick_downloader.py` now derives a tick's event time
+through `resolve_tick_timestamp()`, in this order:
 
-```python
-raw_ts = raw.get("last_traded_timestamp")
-timestamp = datetime.fromtimestamp(int(raw_ts)) if raw_ts else datetime.now()
+1. **`exchange_timestamp`** (epoch **milliseconds**) — the exchange's own feed
+   clock. Present in every subscription mode and populated on every packet.
+   Measured against local receipt on live data it runs ~1.8s behind (max 7.7s),
+   so it is a genuine event clock, not a delayed field.
+2. **`last_traded_timestamp`** (epoch **seconds**) — SNAP_QUOTE only, and `0`
+   until the instrument actually trades.
+3. The collector's wall clock — last resort, and the tick is **labelled**
+   `time_source="received"` so fallbacks are counted per batch and in the
+   session summary rather than passing silently as market time.
+
+Two concrete bugs this fixed, both confirmed by probing the live table:
+
+* **98.7% of ticks were stamped with `datetime.now()`.** Only 60,183 of
+  4,796,304 rows carried a real feed timestamp. `last_traded_timestamp` is `0`
+  — falsy — for anything that has not traded, and the old
+  `if raw_ts` test sent every such packet to the `datetime.now()` fallback.
+  Cash indices, which never "trade", were affected on essentially every tick.
+  Drift on those rows reached **63,323s (17.6 hours)** versus 7.7s on real
+  feed rows, which is what produced the 16:00/18:00/21:00 tick clusters.
+* **Timezone binding.** `datetime.fromtimestamp()` without a `tz` bound the
+  value to the collector's local zone. Conversion now goes through an explicit
+  `IST_TZ` offset, so the stored naive timestamp means the same thing whether
+  the collector runs on the IST host or inside a container. `TZ=Asia/Kolkata`
+  was also added to the `tick-downloader` compose service to match the other
+  three, but the code no longer depends on it.
+
+**Historical data was not corrupted by the timezone issue.** The collector has
+been running natively on an IST host, so `fromtimestamp()` resolved to IST all
+along; stored session hours are 09:00–15:30 IST as expected. The timezone bug
+was a latent landmine that would have fired on first containerised run, not
+existing damage.
+
+**Historical data *is* affected by the fallback issue.** Rows written before
+this fix are distinguishable: feed timestamps land on whole seconds, while
+`datetime.now()` values carry microseconds.
+
+```sql
+-- Rows whose timestamp is processing time, not event time
+SELECT count(*) FROM tick_data WHERE date_part('microseconds', timestamp) <> 0;
 ```
 
-Two distinct problems:
-
-* **Mixed clocks.** When the feed omits `last_traded_timestamp`, the row
-  silently carries *processing* time instead of event time. Nothing in the row
-  distinguishes the two afterwards.
-* **Mixed timezones.** `datetime.fromtimestamp()` without `tz` uses the
-  *process's* local timezone. `docker-compose.yml` sets `TZ: Asia/Kolkata` for
-  `ohlcv-scheduler`, `instrument-sync-scheduler` and `paper-trading-scheduler`
-  — but **not** for `tick-downloader`, and the `Dockerfile` sets no `TZ`
-  either. In that container the timezone is UTC, so tick timestamps land 5h30m
-  behind the IST-naive timestamps in `ohlcv_1min` / `ohlcv_5min`. Joining
-  ticks to bars on time would then be wrong by 5h30m, and a 09:15 IST tick
-  would be stored as 03:45.
-
-**Detection (added in Phase 1):** `validate_ticks` raises an
-`out_of_session` warning for any tick whose timestamp falls outside a live
-trading session. A UTC-stamped session shows up as a wall of 03:45–10:00
-warnings — the signature of exactly this bug. Run:
-
-```bash
-python -m marketdata.report --instrument "Nifty 50" \
-    --from 2026-09-01 --to 2026-09-05 --timeframes tick
-```
-
-**Not fixed here, deliberately.** Setting `TZ: Asia/Kolkata` on the
-`tick-downloader` service would fix new rows, but it would also make historical
-`tick_data` timestamps inconsistent with new ones at an undocumented cut-over
-point. That is a data-semantics change and needs a human decision plus a
-backfill plan; it is listed as recommended follow-up work in
-`docs/phase-1-summary.md`.
+Those rows are still usable as "a tick happened around then" but must not be
+treated as precise event times, and should not be joined to bars at
+sub-minute resolution. No backfill is possible — the original exchange clock
+was never stored.
 
 ### 5.2 Ticks sharing a timestamp are dropped
 
@@ -222,3 +233,4 @@ this.
 | Is a missing bar an error? | No. Only in-session absences are even reported, and then as a warning. |
 | Can I forward-fill in storage? | No. Fill in the feature pipeline, explicitly. |
 | Can I trust `created_at` as "knowable at"? | No — a backfill breaks it. |
+| Are tick timestamps event time? | Yes for new rows (exchange clock). Pre-fix rows with non-zero microseconds are processing time — see §5.1. |
