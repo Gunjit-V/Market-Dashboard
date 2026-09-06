@@ -14,7 +14,6 @@ skipped wherever that dependency is absent.
 
 from __future__ import annotations
 
-import importlib.util
 from datetime import datetime
 
 import pytest
@@ -99,7 +98,6 @@ def test_timestamp_is_ist_regardless_of_process_timezone(monkeypatch):
     local zone, so the tick-downloader container (no TZ set) would have stored
     timestamps 5h30m behind the IST-naive OHLCV tables.
     """
-    import os
     import time
 
     results = []
