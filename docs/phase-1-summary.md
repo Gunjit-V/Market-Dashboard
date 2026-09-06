@@ -200,9 +200,12 @@ failures to inherit.
 3. **Ticks are validated on read, not on ingest.** Adding per-tick validation
    to a hot WebSocket path was not justified here. `parse_tick` already drops
    non-positive LTPs.
-4. **Ticks sharing a timestamp are still silently dropped** by
-   `UNIQUE(instrument_id, timestamp)`. Phase 1 makes the loss *measurable*; it
-   does not change the schema to preserve them.
+4. **~~Ticks sharing a timestamp are still silently dropped.~~ FIXED** by
+   `db/migrations/001_tick_sequence_number.sql`, which adds the feed's
+   `sequence_number` to the uniqueness key. Exchange timestamps are only
+   second-resolution, so the old key discarded genuine same-second snapshots.
+   Rows predating the migration carry `sequence_number = 0` and remain
+   deduplicated as before; the ticks they lost are not recoverable.
 5. **Five-minute bars have no provenance flag.** A row may come from the API or
    from `backfill_from_one_minute()`; the table cannot tell you which.
 6. **No as-of versioning of vendor revisions.** `ON CONFLICT DO NOTHING` keeps

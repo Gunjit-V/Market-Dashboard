@@ -183,3 +183,58 @@ def test_parsed_tick_satisfies_the_tick_contract():
     record = {k: v for k, v in parsed.items() if k != "time_source"}
     result = validate_ticks([record], is_trading_day=lambda d: True)
     assert result.ok, result.by_code()
+
+
+# ── sequence_number (migration 001) ──────────────────────────────────────────
+
+def test_parse_tick_captures_the_feed_sequence_number():
+    parsed = td.parse_tick(
+        _raw(exchange_timestamp=EPOCH_10AM_IST * 1000, sequence_number=987654321),
+        {"99926000": 42},
+    )
+    assert parsed["sequence_number"] == 987654321
+
+
+def test_missing_sequence_number_falls_back_to_zero():
+    # 0 is the "collected before migration 001" marker and keeps the NOT NULL
+    # column satisfied; the feed never sends 0 for a real packet.
+    parsed = td.parse_tick(
+        _raw(exchange_timestamp=EPOCH_10AM_IST * 1000), {"99926000": 42}
+    )
+    assert parsed["sequence_number"] == 0
+
+
+def test_two_snapshots_in_one_second_are_distinct_records():
+    """The bug migration 001 fixes: same instrument, same second, two packets.
+
+    Under UNIQUE(instrument_id, timestamp) these collided and one was dropped.
+    Including sequence_number makes them distinct rows.
+    """
+    ts_ms = EPOCH_10AM_IST * 1000
+    first = td.parse_tick(
+        _raw(exchange_timestamp=ts_ms, sequence_number=100, last_traded_price=10_000),
+        {"99926000": 42},
+    )
+    second = td.parse_tick(
+        _raw(exchange_timestamp=ts_ms, sequence_number=101, last_traded_price=10_050),
+        {"99926000": 42},
+    )
+
+    assert first["timestamp"] == second["timestamp"]      # same second
+    assert first["ltp"] != second["ltp"]                  # genuinely different
+    old_key = ("instrument_id", "timestamp")
+    new_key = ("instrument_id", "timestamp", "sequence_number")
+    assert tuple(first[k] for k in old_key) == tuple(second[k] for k in old_key)
+    assert tuple(first[k] for k in new_key) != tuple(second[k] for k in new_key)
+
+
+def test_parsed_tick_still_satisfies_the_contract_with_sequence_number():
+    from marketdata.validation import validate_ticks
+
+    parsed = td.parse_tick(
+        _raw(exchange_timestamp=EPOCH_10AM_IST * 1000, sequence_number=5),
+        {"99926000": 42},
+    )
+    record = {k: v for k, v in parsed.items() if k != "time_source"}
+    result = validate_ticks([record], is_trading_day=lambda d: True)
+    assert result.ok, result.by_code()

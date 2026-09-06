@@ -83,6 +83,11 @@ CREATE TABLE IF NOT EXISTS tick_data (
     id                  BIGSERIAL PRIMARY KEY,
     instrument_id       INTEGER NOT NULL REFERENCES instruments(id),
     timestamp           TIMESTAMP NOT NULL,
+    -- Feed's per-packet ordering token. Part of the uniqueness key because
+    -- exchange timestamps are only second-resolution: without it, two genuine
+    -- snapshots in the same second collide and one is lost. 0 marks rows
+    -- collected before db/migrations/001_tick_sequence_number.sql.
+    sequence_number     BIGINT NOT NULL DEFAULT 0,
     ltp                 DECIMAL(12, 2) NOT NULL,
     ltq                 INTEGER,
     open                DECIMAL(12, 2),
@@ -97,7 +102,7 @@ CREATE TABLE IF NOT EXISTS tick_data (
     best_5_buy          JSONB,
     best_5_sell         JSONB,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(instrument_id, timestamp)
+    UNIQUE(instrument_id, timestamp, sequence_number)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tick_data_instrument_timestamp

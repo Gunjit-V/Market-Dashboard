@@ -187,12 +187,37 @@ treated as precise event times, and should not be joined to bars at
 sub-minute resolution. No backfill is possible — the original exchange clock
 was never stored.
 
-### 5.2 Ticks sharing a timestamp are dropped
+### 5.2 Ticks sharing a timestamp — fixed by migration 001
 
-`UNIQUE(instrument_id, timestamp)` plus `ON CONFLICT DO NOTHING` means only the
-first snapshot at a given timestamp survives. This is lossy but *not* a
-leakage risk — it discards information rather than adding future information.
-`validate_ticks` counts duplicates so the loss is measurable.
+**Resolved.** `UNIQUE(instrument_id, timestamp)` plus `ON CONFLICT DO NOTHING`
+meant only the first snapshot at a given timestamp survived. Because Angel One
+publishes exchange timestamps at **one-second resolution**, that discarded
+every additional genuine snapshot inside the same second.
+
+This was masked before the timestamp fix: microsecond `datetime.now()` values
+almost never collided. Real exchange clocks collide often, so the constraint
+became actively lossy exactly when timestamps became correct.
+
+`db/migrations/001_tick_sequence_number.sql` adds the feed's own
+`sequence_number` (a monotonic per-packet token the SDK parses and the
+collector previously discarded) to the uniqueness key:
+
+```sql
+UNIQUE (instrument_id, timestamp, sequence_number)
+```
+
+Verified against the live table: three snapshots sharing one exchange second
+now store as three rows (previously one), while replaying the same batch still
+inserts nothing — deduplication is preserved, only genuine distinct packets are
+kept.
+
+Rows collected before the migration carry `sequence_number = 0`, which doubles
+as a "pre-migration" marker. The column is `NOT NULL` deliberately: with NULLs,
+Postgres treats each NULL as distinct and the constraint would stop protecting
+legacy rows.
+
+This was never a *leakage* risk — it discarded information rather than adding
+future information — but it did make tick history an incomplete record.
 
 ### 5.3 Five-minute bars have two possible provenances
 

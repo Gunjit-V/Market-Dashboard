@@ -77,8 +77,12 @@ def test_bar_widths_and_uniqueness_match_the_database_constraint():
     assert OHLCV_1M.bar_minutes == 1
     assert OHLCV_5M.bar_minutes == 5
     assert TICK.bar_minutes is None
-    for contract in (OHLCV_1M, OHLCV_5M, TICK):
+    for contract in (OHLCV_1M, OHLCV_5M):
         assert contract.unique_key == ("instrument_id", "timestamp")
+    # Ticks additionally key on the feed's sequence number: exchange
+    # timestamps are second-resolution, so without it two genuine snapshots
+    # inside one second collide and one is lost (migration 001).
+    assert TICK.unique_key == ("instrument_id", "timestamp", "sequence_number")
 
 
 def test_bars_are_strictly_increasing_but_ticks_need_not_be():
@@ -96,3 +100,11 @@ def test_tick_close_is_documented_as_the_previous_day_close():
     # This is a genuine trap in the existing feed mapping; the contract must
     # spell it out so nobody treats it as the current price.
     assert "PREVIOUS" in TICK.field("close").description
+
+
+def test_tick_sequence_number_is_a_source_field_defaulting_to_zero():
+    spec = TICK.field("sequence_number")
+    assert spec.origin == "source"
+    assert not spec.required          # legacy rows predate it
+    assert spec.non_negative
+    assert "migration 001" in spec.description

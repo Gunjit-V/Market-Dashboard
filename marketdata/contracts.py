@@ -159,7 +159,7 @@ TICK = DatasetContract(
     name="tick",
     table="tick_data",
     bar_minutes=None,
-    unique_key=("instrument_id", "timestamp"),
+    unique_key=("instrument_id", "timestamp", "sequence_number"),
     # A snapshot feed can legitimately publish two snapshots carrying the same
     # last-traded timestamp, so ticks are only required to be non-decreasing.
     strictly_increasing=False,
@@ -183,6 +183,14 @@ TICK = DatasetContract(
                 "Last traded timestamp of the snapshot, naive. Interpreted in "
                 "the collector process's local timezone — see the known "
                 "limitation in docs/point-in-time-data.md."
+            ),
+        ),
+        FieldSpec(
+            "sequence_number", (int,), required=False, origin="source",
+            non_negative=True,
+            description=(
+                "Feed's per-packet ordering token, part of the uniqueness key. "
+                "0 marks rows collected before migration 001."
             ),
         ),
         FieldSpec(

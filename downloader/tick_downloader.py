@@ -370,6 +370,7 @@ def parse_tick(raw: dict, token_map: dict) -> dict | None:
 
     SNAP_QUOTE fields used:
         token                       - instrument token
+        sequence_number             - per-packet ordering token from the feed
         last_traded_price           - LTP in paise
         last_traded_quantity        - last traded quantity
         average_traded_price        - VWAP in paise
@@ -402,6 +403,10 @@ def parse_tick(raw: dict, token_map: dict) -> dict | None:
         return {
             "instrument_id":   token_map[token],
             "timestamp":       timestamp,
+            # The exchange's own per-packet ordering token. Part of the
+            # uniqueness key (migration 001) so two genuine snapshots inside
+            # the same one-second exchange timestamp are both preserved.
+            "sequence_number": raw.get("sequence_number") or 0,
             "ltp":             ltp,
             "ltq":             raw.get("last_traded_quantity"),
             "open":            _paise_to_rupees(raw.get("open_price_of_the_day")),
@@ -450,17 +455,18 @@ def save_ticks_to_db(conn, ticks: list) -> tuple[int, int]:
 
                 cur.execute("""
                     INSERT INTO tick_data (
-                        instrument_id, timestamp, ltp, ltq,
+                        instrument_id, timestamp, sequence_number, ltp, ltq,
                         open, high, low, close,
                         avg_trade_price, volume,
                         total_buy_qty, total_sell_qty,
                         open_interest, best_5_buy, best_5_sell
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (instrument_id, timestamp) DO NOTHING
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (instrument_id, timestamp, sequence_number) DO NOTHING
                 """, (
                     tick.get("instrument_id"),
                     tick.get("timestamp"),
+                    tick.get("sequence_number", 0),
                     tick.get("ltp"),
                     tick.get("ltq"),
                     tick.get("open"),

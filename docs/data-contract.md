@@ -54,6 +54,7 @@ plus day aggregates and the top of the book at that moment.
 | `id` | `BIGSERIAL` | no | storage | Surrogate key. |
 | `instrument_id` | `INTEGER` | **yes** | derived | FK → `instruments.id`, resolved from the feed token. |
 | `timestamp` | `TIMESTAMP` | **yes** | source | The exchange feed clock (`exchange_timestamp`, epoch ms), falling back to `last_traded_timestamp` (epoch s), then to the collector's wall clock as a labelled last resort. See the caveat below. |
+| `sequence_number` | `BIGINT` | no | source | Feed's per-packet ordering token, part of the uniqueness key. `0` marks rows collected before migration 001. |
 | `ltp` | `DECIMAL(12,2)` | **yes** | source | Last traded price, rupees. Must be > 0; the collector already drops ticks with `ltp <= 0`. |
 | `ltq` | `INTEGER` | no | source | Last traded quantity. |
 | `open` | `DECIMAL(12,2)` | no | source | Day open. |
@@ -75,10 +76,12 @@ plus day aggregates and the top of the book at that moment.
   increasing: a snapshot feed can legitimately publish several snapshots
   carrying the same last-traded timestamp. Out-of-order arrival is therefore a
   **warning**, not an error.
-* Because of `UNIQUE(instrument_id, timestamp)`, snapshots sharing a timestamp
-  are **silently dropped on insert**. This is real, quantifiable data loss:
-  `tick_data` holds at most one snapshot per instrument per timestamp
-  resolution. The validator counts duplicates so the loss is at least visible.
+* The uniqueness key is `(instrument_id, timestamp, sequence_number)` as of
+  `db/migrations/001_tick_sequence_number.sql`. Exchange timestamps are only
+  **second-resolution**, so the previous `(instrument_id, timestamp)` key
+  silently dropped every second and subsequent snapshot within the same second.
+  Including the feed's own sequence number preserves them all while keeping
+  re-inserts idempotent.
 
 ### Timestamp caveat
 
