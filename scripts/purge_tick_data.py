@@ -54,16 +54,38 @@ FETCH_BATCH = 100_000
 DELETE_BATCH = 50_000
 
 
-def _where_clause(keep_from: date | None) -> tuple[str, list]:
+# The regular NSE session. Rows stamped outside it are snapshots the feed
+# kept publishing after the close (unchanged LTP, zero volume) that the
+# collector stored before it learned to end its session at 15:30.
+SESSION_OPEN = "09:15"
+SESSION_CLOSE = "15:30"
+
+
+def _where_clause(
+    keep_from: date | None, out_of_session_only: bool = False
+) -> tuple[str, list]:
     """SQL predicate selecting the rows to archive and purge."""
-    if keep_from is None:
+    clauses: list[str] = []
+    params: list = []
+
+    if keep_from is not None:
+        clauses.append("timestamp < %s")
+        params.append(keep_from)
+
+    if out_of_session_only:
+        clauses.append(
+            "(timestamp::time < %s::time OR timestamp::time >= %s::time)"
+        )
+        params.extend([SESSION_OPEN, SESSION_CLOSE])
+
+    if not clauses:
         return "TRUE", []
-    return "timestamp < %s", [keep_from]
+    return " AND ".join(clauses), params
 
 
-def summarize(conn, keep_from: date | None) -> dict:
+def summarize(conn, keep_from: date | None, out_of_session_only: bool = False) -> dict:
     """Report what would be purged, without touching anything."""
-    where, params = _where_clause(keep_from)
+    where, params = _where_clause(keep_from, out_of_session_only)
     with conn.cursor() as cur:
         cur.execute(
             "SELECT count(*), min(timestamp)::date, max(timestamp)::date, "
@@ -135,7 +157,8 @@ def _write_batch(writer, schema, rows: list) -> int:
     return len(rows)
 
 
-def archive(conn, keep_from: date | None, out_path: Path) -> int:
+def archive(conn, keep_from: date | None, out_path: Path,
+            out_of_session_only: bool = False) -> int:
     """Stream the doomed rows into a Snappy-compressed Parquet file.
 
     Returns the number of rows written. The JSONB order-book columns are cast
@@ -144,7 +167,7 @@ def archive(conn, keep_from: date | None, out_path: Path) -> int:
     """
     import pyarrow.parquet as pq
 
-    where, params = _where_clause(keep_from)
+    where, params = _where_clause(keep_from, out_of_session_only)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     schema = _parquet_schema()
 
@@ -197,9 +220,9 @@ def verify(path: Path, expected_rows: int) -> bool:
     return True
 
 
-def purge(conn, keep_from: date | None) -> int:
+def purge(conn, keep_from: date | None, out_of_session_only: bool = False) -> int:
     """Delete the archived rows in batches, committing as it goes."""
-    where, params = _where_clause(keep_from)
+    where, params = _where_clause(keep_from, out_of_session_only)
     deleted = 0
     while True:
         with conn.cursor() as cur:
@@ -249,6 +272,12 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Where to write the Parquet file (default: {DEFAULT_ARCHIVE_DIR}).",
     )
     parser.add_argument(
+        "--out-of-session-only", action="store_true",
+        help=("Restrict to ticks stamped outside 09:15-15:30 — the post-close "
+              "snapshots stored before the collector learned to stop at the "
+              "close. Combine with --keep-from, or use alone to clean every day."),
+    )
+    parser.add_argument(
         "--execute", action="store_true",
         help="Actually archive and delete. Without this, nothing is changed.",
     )
@@ -268,7 +297,7 @@ def main(argv=None) -> int:
 
     conn = ConnectionManager().get_connection()
     try:
-        stats = summarize(conn, args.keep_from)
+        stats = summarize(conn, args.keep_from, args.out_of_session_only)
         purge_count = stats["rows_to_purge"]
 
         print("=" * 62)
@@ -290,6 +319,8 @@ def main(argv=None) -> int:
 
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
         scope = "all" if args.keep_from is None else f"before-{args.keep_from}"
+        if args.out_of_session_only:
+            scope = f"out-of-session-{scope}"
         out_path = args.archive_dir / f"tick_data_{scope}_{stamp}.parquet"
         print(f"\n  archive target : {out_path}")
 
@@ -299,7 +330,7 @@ def main(argv=None) -> int:
             return 0
 
         print("\nArchiving...")
-        written = archive(conn, args.keep_from, out_path)
+        written = archive(conn, args.keep_from, out_path, args.out_of_session_only)
         print(f"Archived {written:,} rows.")
 
         print("\nVerifying archive...")
@@ -311,7 +342,7 @@ def main(argv=None) -> int:
             return 0
 
         print("\nPurging...")
-        deleted = purge(conn, args.keep_from)
+        deleted = purge(conn, args.keep_from, args.out_of_session_only)
         print(f"Deleted {deleted:,} rows.")
 
         if not args.skip_vacuum:

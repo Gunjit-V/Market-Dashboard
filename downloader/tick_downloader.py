@@ -722,12 +722,28 @@ def start_realtime_tick_collection(
 
     print("\nTick collection running. Press Ctrl+C to stop.\n")
 
-    # Step 10: Keep main thread alive, handle Ctrl+C gracefully
+    # Step 10: Keep the main thread alive until the session ends.
+    #
+    # The feed keeps publishing snapshots after 15:30 — unchanged LTP, zero
+    # volume, zero last-traded-quantity — because the exchange is closed, not
+    # because anything traded. Left running, the collector stored those for
+    # hours (sessions bled to 18:53, and once until the following Monday).
+    # Now that every snapshot carries a distinct sequence_number they would no
+    # longer be deduplicated away either, so end the session at the close and
+    # let run_forever() sleep until the next open.
     try:
         while state["running"]:
+            if not in_market_hours(datetime.now(IST)):
+                print("\nMarket closed. Ending session.")
+                break
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nStopping tick collection...")
+    finally:
+        # One shutdown path for every exit reason (close, Ctrl+C, socket
+        # error), so the socket is always closed and the queue always drained.
+        # This previously ran only on Ctrl+C, which is why a normal session end
+        # left ticks in the queue to be flushed — and stamped — hours later.
         state["running"] = False
 
         try:
@@ -738,7 +754,7 @@ def start_realtime_tick_collection(
         worker_thread.join(timeout=10)
         db_conn.close()
 
-        print(f"\nCollection stopped.")
+        print("\nCollection stopped.")
         print(f"Total inserted : {state['total_inserted']}")
         print(f"Total skipped  : {state['total_skipped']}")
         print(f"Clock fallback : {state['total_time_fallback']}")
@@ -841,6 +857,19 @@ def get_tick_data_range(
     except Exception as e:
         print(f"Error fetching tick data range: {e}")
         return []
+
+
+def in_market_hours(moment: datetime) -> bool:
+    """Whether *moment* falls inside a live NSE session.
+
+    Mirrors scheduler.ohlcv_scheduler.in_market_hours: the close is exclusive,
+    so 15:30:00 is already outside the session.
+    """
+    if not is_nse_trading_day(moment.date()):
+        return False
+    clock = moment.timetz().replace(tzinfo=None)
+    return MARKET_OPEN <= clock < MARKET_CLOSE
+
 
 
 def _seconds_until_next_session() -> float:

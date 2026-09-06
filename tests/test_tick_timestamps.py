@@ -238,3 +238,51 @@ def test_parsed_tick_still_satisfies_the_contract_with_sequence_number():
     record = {k: v for k, v in parsed.items() if k != "time_source"}
     result = validate_ticks([record], is_trading_day=lambda d: True)
     assert result.ok, result.by_code()
+
+
+# ── Session boundary (post-close snapshot suppression) ───────────────────────
+
+@pytest.mark.parametrize("moment,expected", [
+    (datetime(2026, 9, 3, 9, 15, 0), True),      # open, inclusive
+    (datetime(2026, 9, 3, 12, 0, 0), True),      # midday
+    (datetime(2026, 9, 3, 15, 29, 59), True),    # last live second
+    (datetime(2026, 9, 3, 15, 30, 0), False),    # close, exclusive
+    (datetime(2026, 9, 3, 15, 40, 51), False),   # the observed post-close drift
+    (datetime(2026, 9, 3, 18, 53, 0), False),    # the observed 18:53 rows
+    (datetime(2026, 9, 3, 9, 14, 59), False),    # pre-open
+])
+def test_market_hours_boundary(moment, expected):
+    assert td.in_market_hours(moment) is expected
+
+
+def test_weekends_are_never_market_hours():
+    # 2026-09-05 is a Saturday.
+    assert td.in_market_hours(datetime(2026, 9, 5, 12, 0)) is False
+
+
+def test_holidays_are_never_market_hours():
+    # 2026-09-14 is in the bundled NSE holiday calendar.
+    assert td.in_market_hours(datetime(2026, 9, 14, 12, 0)) is False
+
+
+def test_session_loop_ends_at_close_and_always_cleans_up():
+    """The loop must break at 15:30, and shutdown must run on every path."""
+    import ast
+    import inspect
+
+    src = inspect.getsource(td.start_realtime_tick_collection)
+    tree = ast.parse(src.lstrip())
+
+    tries = [n for n in ast.walk(tree) if isinstance(n, ast.Try)]
+    session_try = next(
+        t for t in tries
+        if any(isinstance(h.type, ast.Name) and h.type.id == "KeyboardInterrupt"
+               for h in t.handlers)
+    )
+    # Cleanup lives in `finally`, so a normal close cleans up like Ctrl+C does.
+    assert session_try.finalbody, "shutdown must be in a finally block"
+    finally_src = "".join(ast.unparse(n) for n in session_try.finalbody)
+    assert "close_connection" in finally_src
+    assert "worker_thread.join" in finally_src
+    # And the loop consults market hours rather than spinning until the socket dies.
+    assert "in_market_hours" in ast.unparse(session_try.body)

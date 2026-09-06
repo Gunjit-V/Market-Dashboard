@@ -70,6 +70,23 @@ plus day aggregates and the top of the book at that moment.
 | `best_5_sell` | `JSONB` | no | source | Top 5 asks, same shape. |
 | `created_at` | `TIMESTAMP` | no | storage | Row insertion time (processing time). |
 
+### Session boundaries
+
+The feed keeps publishing snapshots after the 15:30 close — unchanged `ltp`,
+`volume = 0`, `ltq = 0` — because the exchange is closed, not because anything
+traded. The collector now ends its session at the close
+(`in_market_hours()` in `downloader/tick_downloader.py`) rather than running
+until the socket dies, so those snapshots are no longer stored.
+
+Rows collected before that change existed outside 09:15-15:30 (21,914 of them,
+stamped as late as 18:53 and in one case the following Monday) and have been
+archived and removed via
+`python scripts/purge_tick_data.py --out-of-session-only`.
+
+Every `tick_data` row is therefore expected to fall inside a live session.
+`marketdata.validation.validate_ticks` reports any that do not as
+`out_of_session` warnings.
+
 ### Ordering and duplicates
 
 * Ticks are expected to be **non-decreasing** in `timestamp`, not strictly
