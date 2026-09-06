@@ -128,7 +128,7 @@ export interface IVHistoryData {
   series: IVHistoryPoint[]
 }
 
-// ─── Strategies / Backtesting / Paper Trading ─────────────────────────────────
+// ─── Strategies / Backtesting ──────────────────────────────────────────────────
 
 export interface Strategy {
   id: number
@@ -199,33 +199,5 @@ export interface EquityPoint {
   cash: number
   open_positions_value: number
   drawdown_pct?: number | null
-}
-
-export interface SignalRow {
-  id: number
-  strategy_id: number
-  strategy_name: string
-  instrument_id: number | null
-  symbol: string | null
-  timestamp: string
-  signal_type: 'entry_long' | 'entry_short' | 'exit' | 'hold'
-  reason?: string
-  metrics?: Record<string, number>
-  acted_on: boolean
-}
-
-export interface PaperTradingSummary {
-  strategy_id: number
-  strategy_name: string
-  starting_capital: number
-  current_equity: number
-  total_pnl: number
-  total_pnl_pct: number
-  open_trades: number
-  closed_trades: number
-  winning_trades: number
-  losing_trades: number
-  win_rate_pct: number
-  max_drawdown_pct: number
 }
 

@@ -2,7 +2,7 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api.routes import health, instruments, ohlcv, ticks, download, volatility, strategies, paper_trading, quality
+from api.routes import health, instruments, ohlcv, ticks, download, volatility, strategies, quality
 
 app = FastAPI(
     title="Indian Stock Market Data",
@@ -37,7 +37,6 @@ app.include_router(download.router, prefix="/download", tags=["Download"])
 app.include_router(volatility.router, prefix="/volatility",
                    tags=["Volatility"])
 app.include_router(strategies.router, prefix="/strategies", tags=["Strategies"])
-app.include_router(paper_trading.router, prefix="/paper-trading", tags=["Paper Trading"])
 app.include_router(quality.router, prefix="/quality", tags=["Data Quality"])
 
 

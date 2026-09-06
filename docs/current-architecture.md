@@ -12,7 +12,7 @@ Phase 1 added exactly one new component (`marketdata/`, plus a read-only
 ## 3.1 System overview
 
 HereWeGoAgain is an Indian market-data platform built around a single
-PostgreSQL database. Six long-lived processes (defined in `docker-compose.yml`)
+PostgreSQL database. Five long-lived processes (defined in `docker-compose.yml`)
 read from or write to that database; there is no message bus, no job queue and
 no service-to-service RPC — the database *is* the integration point.
 
@@ -21,10 +21,9 @@ no service-to-service RPC — the database *is* the integration point.
 | Instrument sync | `scheduler/instrument_sync_scheduler.py` → `downloader/sync_instruments.py` | Once per trading day before open: download the Angel One instrument master, upsert `instruments`, deactivate expired contracts, activate the current Nifty ATM option set. |
 | OHLCV scheduler | `scheduler/ohlcv_scheduler.py` → `downloader/ohlcv.py` | During market hours: submit a 1-minute download every trading minute and a 5-minute download on each 5-minute boundary. |
 | Tick downloader | `downloader/tick_downloader.py` | Holds an Angel One `SmartWebSocketV2` SNAP_QUOTE subscription for the session and batch-inserts snapshots into `tick_data`. |
-| REST API | `api/main.py` (FastAPI, port 8000) | Read endpoints for instruments, OHLCV, ticks, volatility, download status, strategies, paper trading, data quality; two write endpoints behind `X-API-Key`. |
+| REST API | `api/main.py` (FastAPI, port 8000) | Read endpoints for instruments, OHLCV, ticks, volatility, download status, strategies, data quality; two write endpoints behind `X-API-Key`. |
 | Live dashboard | `dashboard/server.py` (FastAPI, port 8050) | Order-book/L2 dashboard. Pushes over a WebSocket, woken by PostgreSQL `LISTEN/NOTIFY` on `tick_update` rather than polling. |
-| Paper trading | `scheduler/paper_trading_scheduler.py` → `backtest/` | Evaluates `rv_breakout` and `vrp_reversion` once per 5-minute bar; writes simulated `trades` / `equity_curve` / `signals`. No real orders. |
-| React frontend | `frontend/` (Vite, port 5173) | Dashboard, OHLCV chart, volatility, strategies, paper-trading pages. |
+| React frontend | `frontend/` (Vite, port 5173) | Dashboard, OHLCV chart, volatility and strategies pages. |
 
 Configuration is entirely environment variables, loaded with `python-dotenv`
 from a `.env` file that is git-ignored. `db/connection.py` resolves either
@@ -58,13 +57,13 @@ flowchart LR
         O5[(ohlcv_5min)]
         TD[(tick_data)]
         LOG[(download_log)]
-        SIM[(strategies, backtest_runs,<br/>trades, equity_curve, signals)]
+        SIM[(strategies, backtest_runs,<br/>trades, equity_curve)]
     end
 
     subgraph Consumers
         API["api/main.py<br/>FastAPI :8000"]
         DASH["dashboard/server.py<br/>WebSocket :8050"]
-        BT["backtest/ engine<br/>+ paper trading"]
+        BT["backtest/ engine<br/>+ strategies"]
         QUAL["marketdata/report.py<br/>quality report"]
     end
 
@@ -139,7 +138,7 @@ db/init_schema.sql` (every statement is `IF NOT EXISTS`).
 | `ohlcv_5min` | 5-minute bars | `UNIQUE(instrument_id, timestamp)` | `(instrument_id, timestamp DESC)`, `(timestamp DESC)` |
 | `tick_data` | SNAP_QUOTE snapshots incl. best-5 book as `JSONB` | `UNIQUE(instrument_id, timestamp)` | `(instrument_id, timestamp DESC)`, `(timestamp DESC)` |
 | `download_log` | One row per instrument per download run | — | `instrument_id`, `status`, `last_run_at DESC` |
-| `strategies`, `backtest_runs`, `trades`, `equity_curve`, `signals` | Simulation results (backtest and paper trading share one representation) | see `db/init_schema.sql` | per-table |
+| `strategies`, `backtest_runs`, `trades`, `equity_curve` | Backtest simulation results. `trades.is_paper` remains as a discriminator, but nothing writes `TRUE` rows since the paper-trading feature was removed. | see `db/init_schema.sql` | per-table |
 
 * **Partitioning:** none. `ohlcv_1min`, `ohlcv_5min` and `tick_data` are plain
   heap tables; growth is managed only by what the schedulers choose to fetch.

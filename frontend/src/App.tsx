@@ -6,7 +6,6 @@ import OHLCV from './pages/OHLCV'
 import Download from './pages/Download'
 import Volatility from './pages/Volatility'
 import Strategies from './pages/Strategies'
-import PaperTrading from './pages/PaperTrading'
 
 function App() {
   return (
@@ -18,7 +17,6 @@ function App() {
         <Route path="/download" element={<Download />} />
         <Route path="/volatility" element={<Volatility />} />
         <Route path="/strategies" element={<Strategies />} />
-        <Route path="/paper-trading" element={<PaperTrading />} />
       </Routes>
     </Layout>
   )

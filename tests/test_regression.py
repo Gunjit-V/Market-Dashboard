@@ -157,11 +157,13 @@ def test_ingestion_defaults_to_report_only():
 
 def test_phase_1_did_not_alter_the_schema():
     schema = (ROOT / "db" / "init_schema.sql").read_text()
+    # `signals` was removed on master alongside the paper-trading feature.
     for table in ("ohlcv_1min", "ohlcv_5min", "tick_data", "instruments",
                   "download_log", "strategies", "backtest_runs", "trades",
-                  "equity_curve", "signals"):
+                  "equity_curve"):
         assert f"CREATE TABLE IF NOT EXISTS {table}" in schema
-    # No migration was introduced by Phase 1.
+    # The bootstrap script stays declarative: schema changes ship as numbered
+    # files under db/migrations/ instead (see 001_tick_sequence_number.sql).
     assert "ALTER TABLE" not in schema
     assert "DROP TABLE" not in schema
 
@@ -170,9 +172,11 @@ def test_phase_1_did_not_alter_the_schema():
 
 def test_all_pre_existing_routers_are_still_registered():
     main = (ROOT / "api" / "main.py").read_text()
+    # /paper-trading was removed on master with the paper-trading feature.
     for prefix in ("/health", "/instruments", "/ohlcv", "/ticks", "/download",
-                   "/volatility", "/strategies", "/paper-trading"):
+                   "/volatility", "/strategies"):
         assert f'prefix="{prefix}"' in main
+    assert 'prefix="/paper-trading"' not in main
 
 
 def test_the_quality_router_was_added_read_only():

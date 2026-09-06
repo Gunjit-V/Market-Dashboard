@@ -180,10 +180,9 @@ ON backtest_runs(strategy_id);
 
 
 -- ── 8. trades ────────────────────────────────────────────────────────────────
--- Individual simulated trades. Shared by backtests (backtest_run_id set,
--- is_paper=FALSE) and live paper trading (backtest_run_id NULL, is_paper=
--- TRUE) so both paths reuse one fill/PnL representation and one set of
--- reporting queries.
+-- Individual simulated trades from backtest runs (backtest_run_id set,
+-- is_paper=FALSE). is_paper is kept as a discriminator for any future
+-- live/paper trading path, but nothing currently writes TRUE rows.
 
 CREATE TABLE IF NOT EXISTS trades (
     id                  BIGSERIAL PRIMARY KEY,
@@ -220,8 +219,8 @@ ON trades(instrument_id);
 
 
 -- ── 9. equity_curve ──────────────────────────────────────────────────────────
--- Periodic portfolio-value snapshots for both backtests and paper trading,
--- so charts don't need to replay every trade to draw an equity line.
+-- Periodic portfolio-value snapshots for backtest runs, so charts don't
+-- need to replay every trade to draw an equity line.
 
 CREATE TABLE IF NOT EXISTS equity_curve (
     id                  BIGSERIAL PRIMARY KEY,
@@ -242,28 +241,7 @@ CREATE INDEX IF NOT EXISTS idx_equity_curve_strategy_paper
 ON equity_curve(strategy_id, is_paper, timestamp DESC);
 
 
--- ── 10. signals ──────────────────────────────────────────────────────────────
--- Log of every signal a live strategy evaluation produced, whether or not it
--- resulted in a trade (e.g. filtered by an existing open position) — useful
--- for auditing "why didn't it trade" and for a live signal feed in the UI.
-
-CREATE TABLE IF NOT EXISTS signals (
-    id                  BIGSERIAL PRIMARY KEY,
-    strategy_id         INTEGER NOT NULL REFERENCES strategies(id),
-    instrument_id       INTEGER REFERENCES instruments(id),
-    timestamp           TIMESTAMP NOT NULL,
-    signal_type         VARCHAR(20) NOT NULL,   -- 'entry_long', 'entry_short', 'exit'
-    reason              VARCHAR(255),
-    metrics             JSONB DEFAULT '{}',      -- e.g. {"rv_short": 0.18, "rv_long": 0.12, "ratio": 1.5}
-    acted_on            BOOLEAN DEFAULT FALSE,
-    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_signals_strategy_time
-ON signals(strategy_id, timestamp DESC);
-
-
--- ── 11. Notification trigger (from setup_trigger.sql) ─────────────────────────
+-- ── 10. Notification trigger (from setup_trigger.sql) ─────────────────────────
 
 CREATE OR REPLACE FUNCTION notify_new_tick()
 RETURNS TRIGGER AS $$
