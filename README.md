@@ -244,6 +244,42 @@ python -m pytest
 *   [`docs/point-in-time-data.md`](docs/point-in-time-data.md) — temporal semantics and leakage rules for future ML work.
 *   [`docs/phase-1-summary.md`](docs/phase-1-summary.md) — what Phase 1 changed, and its known limitations.
 
+## 🗄️ Tick data retention
+
+Tick volume grows fast — roughly half a million rows per session, more now that
+same-second snapshots are preserved. The `retention-scheduler` service archives
+ticks older than a retention window to compressed Parquet, verifies the archive,
+then deletes them from PostgreSQL.
+
+It runs once daily at `RETENTION_RUN_TIME` (default 16:30 IST, after the close
+so it never competes with the collector). Parquet compresses this data roughly
+13x, so an archived day costs a fraction of what it does in the database.
+
+```env
+TICK_RETENTION_DAYS=7          # days to keep in PostgreSQL
+RETENTION_RUN_TIME=16:30       # IST
+RETENTION_ARCHIVE_DIR=         # defaults to data/archive/
+RETENTION_VACUUM=false         # VACUUM FULL after purge (exclusive lock)
+```
+
+Archives land in `data/archive/` (bind-mounted, gitignored) as
+`tick_data_before-<date>_<stamp>.parquet`. Read one back with:
+
+```python
+import pyarrow.parquet as pq
+df = pq.read_table("data/archive/tick_data_before-2026-09-03_....parquet").to_pandas()
+```
+
+Deletion only happens after the archive is written **and** its row count is
+verified, so a failed archive leaves the table untouched.
+
+To archive/purge manually instead:
+
+```bash
+python scripts/purge_tick_data.py --keep-from 2026-09-01   # dry run
+python scripts/purge_tick_data.py --keep-from 2026-09-01 --execute
+```
+
 ## 🐳 Running with Docker
 
 You can easily run the entire stack (Database, API, Dashboard, Tick Downloader, and Frontend) using Docker Compose.

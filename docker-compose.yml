@@ -86,6 +86,25 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  retention-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: market-retention-scheduler
+    restart: unless-stopped
+    command: python -m scheduler.retention_scheduler
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@host.docker.internal:${DB_PORT:-5432}/${DB_NAME}
+      TZ: Asia/Kolkata
+    volumes:
+      # Archives must outlive the container, so the host directory is bind
+      # mounted rather than written to the container filesystem.
+      - ./data/archive:/app/data/archive
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   react-frontend:
     build:
       context: ./frontend
