@@ -98,7 +98,7 @@ Small and additive. One new package, one new read-only route, one hook.
 ```
 marketdata/          NEW — contracts, sessions, validation, quality, ingest,
                      access, report CLI (stdlib-only)
-tests/               NEW — 173 tests, no DB / network / live data
+tests/               NEW — 219 tests, no DB / network / live data
 docs/                NEW — architecture, contracts, validation, point-in-time,
                      this summary
 api/routes/quality.py  NEW — read-only GET /quality/{symbol}
@@ -162,8 +162,10 @@ Guarantees about behaviour, not just checks:
 
 ## Tests
 
-173 tests (172 pass, 1 skipped — an integration check that needs FastAPI and
-psycopg2 installed). Runtime ~0.2s. Deterministic: no database, no network, no
+219 tests (218 pass, 1 skipped — an integration check that needs FastAPI
+installed). Runtime ~1.3s. The count has grown past the original Phase 1
+deliverable: `test_tick_timestamps.py` and `test_retention.py` cover the tick
+timestamp fix and the retention service, both added after Phase 1 closed. Deterministic: no database, no network, no
 live market data, and no dependence on the current date. Tests that care about
 trading days inject their own calendar predicate.
 
