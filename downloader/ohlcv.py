@@ -60,8 +60,20 @@ def is_priority(instrument_type: str) -> bool:
 # Derivative contracts (futures/options) are short-lived and never trade
 # before they are listed, so paginating DEFAULT_DAYS back for them wastes
 # API calls on empty chunks. Cap their first-run backfill window instead.
+#
+# 30 days was chosen to match the weekly Nifty option chain's actual life
+# (listed roughly 30 days before expiry), reducing the 90-day/18-chunk
+# first-run backfill (measured: 756 API calls / ~25 min for 42 fresh options
+# on 2026-09-07) down to a 30-day/6-chunk backfill (~250 calls / ~8 min).
+#
+# Tradeoff: monthly index futures (FUTIDX) are typically listed further out
+# than 30 days — e.g. NIFTY23NOV26FUT was listed ~3 months before its Nov
+# expiry — so this also truncates their first-run history to the last 30
+# days. That is accepted here in favour of the option-chain backfill cost;
+# revisit with a longer window (or a separate cap for FUTIDX vs OPTIDX) if
+# full futures history from listing turns out to matter.
 DERIVATIVE_TYPES = {"FUTIDX", "OPTIDX", "FUTSTK", "OPTSTK"}
-DERIVATIVE_DAYS = 90
+DERIVATIVE_DAYS = 30
 
 # ── Interval configuration ───────────────────────────────────────────────────
 # Each entry maps a short label to the Angel One API interval name, the

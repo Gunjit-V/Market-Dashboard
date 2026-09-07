@@ -93,3 +93,18 @@ def test_five_minute_runs_are_queued_behind_one_minute():
     # A single worker is what serialises 1m and 5m; two workers let them
     # compete for the same per-account quota.
     assert "max_workers=1" in src
+
+
+def test_derivative_backfill_window_matches_the_option_chains_life():
+    from downloader.ohlcv import CHUNK_DAYS, DERIVATIVE_DAYS
+
+    # Sized to the weekly Nifty option chain's actual listing life (~30 days
+    # before expiry), not the platform default (90). Measured on 2026-09-07:
+    # 90 days cost 756 API calls (~25 min) to backfill 42 fresh options; 30
+    # days cuts that to 252 calls (~8 min). See downloader/ohlcv.py for the
+    # accepted tradeoff on monthly index futures, which can list further out
+    # than 30 days and so have their first-run history truncated too.
+    assert DERIVATIVE_DAYS == 30
+    assert DERIVATIVE_DAYS % CHUNK_DAYS == 0, (
+        "should divide evenly into CHUNK_DAYS-sized pagination chunks"
+    )
