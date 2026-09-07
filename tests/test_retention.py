@@ -77,3 +77,24 @@ def test_run_time_reads_the_environment(monkeypatch):
 def test_a_malformed_run_time_falls_back(monkeypatch):
     monkeypatch.setenv("RETENTION_RUN_TIME", "not-a-time")
     assert (_run_time().hour, _run_time().minute) == (16, 30)
+
+
+# ── Clock-source marker (see docs/point-in-time-data.md 5.1) ─────────────────
+
+def test_exchange_clock_rows_are_identified_by_sequence_number():
+    """Timestamp precision cannot identify the clock source; seq can.
+
+    Two heuristics were tried and both failed on real data:
+      - whole-second (microseconds = 0) misclassifies genuine millisecond
+        exchange timestamps like 13:53:39.025000 as fallbacks;
+      - millisecond alignment misclassifies datetime.now() values, because
+        Windows clock granularity puts ~59% of them on a ms boundary.
+    """
+    import inspect
+
+    import purge_tick_data as pm
+
+    src = inspect.getsource(pm.summarize)
+    assert "sequence_number > 0" in src
+    # The discredited precision heuristics must not come back.
+    assert "microseconds" not in src.split("feed_clock")[0].split("cur.execute")[-1]

@@ -195,7 +195,8 @@ failures to inherit.
    `docs/point-in-time-data.md` §5.1. Residual limitation: ticks written
    **before** the fix have `datetime.now()` timestamps in 98.7% of rows and
    cannot be repaired — the exchange clock was never stored. Identify them with
-   `date_part('microseconds', timestamp) <> 0`.
+   `sequence_number = 0`. Timestamp precision cannot distinguish them (see
+   docs/point-in-time-data.md §5.1); these rows' clock source is unknowable.
 2. **The holiday calendar covers 2026 only.** Outside 2026, only weekends are
    known non-trading days, so gap counts are over-stated. The report attaches
    an explicit note; `NSE_HOLIDAYS` extends the calendar without a code change.

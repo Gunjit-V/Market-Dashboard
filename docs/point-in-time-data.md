@@ -178,9 +178,19 @@ this fix are distinguishable: feed timestamps land on whole seconds, while
 `datetime.now()` values carry microseconds.
 
 ```sql
--- Rows whose timestamp is processing time, not event time
-SELECT count(*) FROM tick_data WHERE date_part('microseconds', timestamp) <> 0;
+-- Rows written from the exchange clock. sequence_number is set only on that
+-- path, so it is the one unambiguous marker.
+SELECT count(*) FROM tick_data WHERE sequence_number > 0;   -- event time
+SELECT count(*) FROM tick_data WHERE sequence_number = 0;   -- unknown/pre-fix
 ```
+
+Timestamp precision cannot be used for this. Two earlier attempts both failed:
+testing `microseconds <> 0` (whole seconds) misclassifies genuine millisecond
+feed timestamps such as `13:53:39.025000`, and testing millisecond alignment
+misclassifies `datetime.now()` values — Windows clock granularity puts ~59% of
+them on a millisecond boundary. Only `sequence_number` separates the two
+cleanly, and it exists only from migration 001 onward, so rows written before
+it are correctly reported as *unknown* rather than as fallbacks.
 
 Those rows are still usable as "a tick happened around then" but must not be
 treated as precise event times, and should not be joined to bars at

@@ -26,7 +26,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import date, datetime, time as clock_time, timedelta
 from zoneinfo import ZoneInfo
 
-from downloader.ohlcv import download_historical_data
+from downloader.ohlcv import authenticate, download_historical_data
 from scheduler.nse_calendar import is_nse_trading_day
 
 
@@ -51,6 +51,50 @@ def in_market_hours(moment: datetime) -> bool:
     return MARKET_OPEN <= current < MARKET_CLOSE
 
 
+class SessionCache:
+    """Holds one authenticated SmartAPI session, shared across downloads.
+
+    Without this, download_historical_data() authenticates on every call:
+    1m runs every trading minute and 5m every five, so a session produced
+    ~450 logins and Angel One rate-limited the login endpoint (49 transient
+    "Authentication error" retries on 2026-09-07 alone). The downloader has
+    always accepted a `smart_api` argument for exactly this purpose; it was
+    simply never passed.
+
+    The session is re-created when a download reports it is unusable, so an
+    expired token still recovers on the next bar rather than wedging.
+    """
+
+    def __init__(self, ttl_minutes: int = 60) -> None:
+        self._lock = threading.Lock()
+        self._session = None
+        self._created_at: datetime | None = None
+        self._ttl = timedelta(minutes=ttl_minutes)
+
+    def get(self):
+        """Return a live session, authenticating only when needed."""
+        with self._lock:
+            now = datetime.now(IST)
+            if (
+                self._session is not None
+                and self._created_at is not None
+                and now - self._created_at < self._ttl
+            ):
+                return self._session
+
+            session = authenticate()
+            if session is not None:
+                self._session = session
+                self._created_at = now
+            return session
+
+    def invalidate(self) -> None:
+        """Drop the cached session so the next download re-authenticates."""
+        with self._lock:
+            self._session = None
+            self._created_at = None
+
+
 class IntervalRunner:
     """Runs at most one download for each interval at a time."""
 
@@ -58,6 +102,7 @@ class IntervalRunner:
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ohlcv")
         self.locks = {interval: threading.Lock() for interval in ("1m", "5m")}
         self.futures: set[Future] = set()
+        self.sessions = SessionCache()
 
     def submit(self, interval: str) -> None:
         lock = self.locks[interval]
@@ -65,22 +110,30 @@ class IntervalRunner:
             LOGGER.warning("Skipping %s run: previous run is still active", interval)
             return
 
-        future = self.executor.submit(self._run, interval, lock)
+        future = self.executor.submit(self._run, interval, lock, self.sessions)
         self.futures.add(future)
         future.add_done_callback(self.futures.discard)
 
     @staticmethod
-    def _run(interval: str, lock: threading.Lock) -> None:
+    def _run(interval: str, lock: threading.Lock, sessions: "SessionCache") -> None:
         try:
             LOGGER.info("Starting %s download", interval)
+            session = sessions.get()
+            if session is None:
+                LOGGER.error("Skipping %s download: authentication failed", interval)
+                return
             download_historical_data(
                 interval=interval,
                 instrument_types=INSTRUMENT_TYPES or None,
                 names=NAMES or None,
                 symbols=SYMBOLS or None,
+                smart_api=session,
             )
             LOGGER.info("Finished %s download", interval)
         except Exception:
+            # The session may be the reason; force a fresh login next bar
+            # rather than reusing a token that might be dead.
+            sessions.invalidate()
             LOGGER.exception("Unhandled error in %s download", interval)
         finally:
             lock.release()

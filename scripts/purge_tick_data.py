@@ -101,8 +101,16 @@ def summarize(conn, keep_from: date | None, out_of_session_only: bool = False) -
         cur.execute("SELECT pg_size_pretty(pg_total_relation_size('tick_data'))")
         size = cur.fetchone()[0]
 
+        # sequence_number > 0 is the only unambiguous marker of a row written
+        # from the exchange clock: the collector sets it and the fallback path
+        # cannot. Timestamp precision alone does not work — Windows clock
+        # granularity puts ~59% of datetime.now() values on a millisecond
+        # boundary, so millisecond-alignment cannot distinguish them, and
+        # whole-second alignment misclassifies genuine feed rows instead.
+        # Rows predating migration 001 all report 0 here, which is correct:
+        # their clock source is genuinely unknown.
         cur.execute(
-            "SELECT count(*) FILTER (WHERE date_part('microseconds', timestamp) = 0) "
+            "SELECT count(*) FILTER (WHERE sequence_number > 0) "
             f"FROM tick_data WHERE {where}",
             params,
         )
@@ -310,7 +318,7 @@ def main(argv=None) -> int:
               f"({stats['first_day']} -> {stats['last_day']})")
         print(f"  to retain      : {stats['rows_retained']:,}")
         pct = 100 * stats["feed_clock_rows"] / max(purge_count, 1)
-        print(f"  of the purged, real feed-clock rows: "
+        print(f"  of the purged, exchange-clock rows (seq>0): "
               f"{stats['feed_clock_rows']:,} ({pct:.1f}%)")
 
         if purge_count == 0:
