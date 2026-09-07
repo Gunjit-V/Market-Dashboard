@@ -222,6 +222,28 @@ def write_download_log(
 
 # ── API fetch with retry ─────────────────────────────────────────────────────
 
+# Angel One signals throttling two different ways: a structured JSON body with
+# errorcode AB1004, and a plain-text body ("Access denied because of exceeding
+# access rate") that the SDK cannot parse, so it surfaces as a DataException.
+# Both mean the same thing and both deserve the same backoff — without this,
+# the text variant fell into the generic handler and was logged as an opaque
+# "DataException", which reads like the data is unavailable rather than
+# throttled.
+RATE_LIMIT_ERRORCODE = "AB1004"
+RATE_LIMIT_MARKERS = (
+    "exceeding access rate",
+    "access denied because of exceeding",
+    "rate limit",
+)
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Whether *exc* is Angel One's unparseable rate-limit rejection."""
+    text = str(exc).lower()
+    return any(marker in text for marker in RATE_LIMIT_MARKERS)
+
+
+
 def fetch_candle_data(
     smartApi,
     token: str,
@@ -246,7 +268,7 @@ def fetch_candle_data(
 
             if response and response.get("status"):
                 return response.get("data", [])
-            elif response and response.get("errorcode") == "AB1004":
+            elif response and response.get("errorcode") == RATE_LIMIT_ERRORCODE:
                 # Rate limiting error, retry with exponential backoff
                 if attempt < MAX_RETRIES - 1:
                     print(
@@ -263,15 +285,23 @@ def fetch_candle_data(
                 return []
 
         except Exception as e:
+            # Log the message, not just the class. A bare "DataException" hides
+            # that this is throttling and reads as though the data does not
+            # exist, which is a materially different (and unfixable) problem.
+            rate_limited = _is_rate_limit_error(e)
+            label = "Rate limited by Angel One" if rate_limited else "Exception"
             print(
-                "    Exception fetching candle data "
-                f"(attempt {attempt + 1}/{MAX_RETRIES}): {type(e).__name__}"
+                f"    {label} fetching candle data "
+                f"(attempt {attempt + 1}/{MAX_RETRIES}): "
+                f"{type(e).__name__}: {e}"
             )
             if attempt < MAX_RETRIES - 1:
                 print(f"    Retrying in {backoff}s...")
                 time.sleep(backoff)
                 backoff *= 2
             else:
+                if rate_limited:
+                    print("    Max retries reached for rate limiting.")
                 return []
 
     return []
