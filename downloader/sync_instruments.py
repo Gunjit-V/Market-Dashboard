@@ -12,6 +12,7 @@ with the market and the option activation set must be recomputed each day.
 
 import os
 import sys
+import time
 from pathlib import Path
 import pandas as pd
 import psycopg2.extras
@@ -36,10 +37,43 @@ OPTIONS_STRIKE_RANGE = int(os.getenv("OPTIONS_STRIKE_RANGE", "10"))
 
 # ── Download & clean ──────────────────────────────────────────────────────────
 
+# The master download is a single point of failure for the whole day's sync:
+# it runs before any database work, and until 2026-09-07 a single transient
+# error aborted the run with no retry. That day an SSL hostname-verification
+# blip at 08:45 left the system with only 7 active instruments (the 42 Nifty
+# options stayed deactivated) until it was run by hand hours later.
+MASTER_MAX_RETRIES = int(os.getenv("INSTRUMENT_SYNC_MAX_RETRIES", "4"))
+MASTER_INITIAL_BACKOFF = float(os.getenv("INSTRUMENT_SYNC_BACKOFF", "15"))
+
+
 def get_instrument_master() -> pd.DataFrame:
-    """Download the Angel One instrument master and return a cleaned DataFrame."""
+    """Download the Angel One instrument master and return a cleaned DataFrame.
+
+    Retries with exponential backoff: the upstream host has shown transient
+    TLS and availability failures, and the cost of giving up is a full day of
+    stale instrument activation.
+    """
     print(f"Downloading master from {URL}...")
-    df = pd.read_json(URL)
+
+    backoff = MASTER_INITIAL_BACKOFF
+    df = None
+    for attempt in range(1, MASTER_MAX_RETRIES + 1):
+        try:
+            df = pd.read_json(URL)
+            break
+        except Exception as e:
+            if attempt == MASTER_MAX_RETRIES:
+                print(
+                    f"Master download failed after {MASTER_MAX_RETRIES} attempts: "
+                    f"{type(e).__name__}: {e}"
+                )
+                raise
+            print(
+                f"Master download failed (attempt {attempt}/{MASTER_MAX_RETRIES}): "
+                f"{type(e).__name__}. Retrying in {backoff:.0f}s..."
+            )
+            time.sleep(backoff)
+            backoff *= 2
 
     print("Cleaning data...")
     # Token as string (Angel One uses numeric tokens but DB stores varchar)
