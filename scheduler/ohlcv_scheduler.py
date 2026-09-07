@@ -99,7 +99,12 @@ class IntervalRunner:
     """Runs at most one download for each interval at a time."""
 
     def __init__(self) -> None:
-        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ohlcv")
+        # One worker, not two. 1m and 5m previously ran concurrently and
+        # competed for the same per-account candle quota; with 49 active
+        # instruments a 1m sweep already fills most of the minute, so running
+        # 5m alongside it only made both throttle harder. 5m is now queued
+        # behind 1m and runs once the 1m sweep has finished.
+        self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ohlcv")
         self.locks = {interval: threading.Lock() for interval in ("1m", "5m")}
         self.futures: set[Future] = set()
         self.sessions = SessionCache()
@@ -168,6 +173,8 @@ def run_forever() -> None:
                 # with the 09:15 session open (09:15, 09:20, ...).
                 runner.submit("1m")
                 if (now.hour * 60 + now.minute - 9 * 60 - 15) % 5 == 0:
+                    # Queued, not parallel: the single worker runs this only
+                    # after the 1m sweep for this minute has completed.
                     runner.submit("5m")
                 last_tick = tick
 
