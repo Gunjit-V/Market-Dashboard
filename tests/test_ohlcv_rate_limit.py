@@ -13,7 +13,10 @@ import pytest
 
 pytest.importorskip("SmartApi", reason="Angel One SDK not installed")
 
-from downloader.ohlcv import RATE_LIMIT_ERRORCODE, _is_rate_limit_error
+from downloader.ohlcv import (
+    RATE_LIMIT_ERRORCODES,
+    _is_rate_limit_error,
+)
 
 
 def test_the_unparseable_throttle_response_is_recognised():
@@ -39,8 +42,15 @@ def test_a_network_error_is_not_a_rate_limit():
     assert not _is_rate_limit_error(ConnectionError("connection reset by peer"))
 
 
-def test_the_structured_errorcode_is_still_recognised():
-    assert RATE_LIMIT_ERRORCODE == "AB1004"
+def test_both_structured_throttle_codes_are_recognised():
+    # AB1021 ("Too many requests") was previously unhandled: it fell through to
+    # the generic branch and returned no candles without retrying.
+    assert "AB1004" in RATE_LIMIT_ERRORCODES
+    assert "AB1021" in RATE_LIMIT_ERRORCODES
+
+
+def test_too_many_requests_text_is_recognised():
+    assert _is_rate_limit_error(Exception("Too many requests"))
 
 
 def test_the_handler_logs_the_message_not_just_the_class():
@@ -49,6 +59,9 @@ def test_the_handler_logs_the_message_not_just_the_class():
     from downloader.ohlcv import fetch_candle_data
 
     src = inspect.getsource(fetch_candle_data)
-    # The message must reach the log; type(e).__name__ alone hid the cause.
+    # Non-throttle errors still log their message; a bare class name hid the
+    # cause. Throttle errors log a short line instead, since they are frequent
+    # and the SDK's JSON-parse wrapper adds nothing.
     assert "{type(e).__name__}: {e}" in src
     assert "_is_rate_limit_error" in src
+    assert "Rate limited by Angel One " in src
