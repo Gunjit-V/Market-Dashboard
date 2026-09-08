@@ -243,6 +243,9 @@ python -m pytest
 *   [`docs/validation.md`](docs/validation.md) — validation rules, quality reporting, how to run both.
 *   [`docs/point-in-time-data.md`](docs/point-in-time-data.md) — temporal semantics and leakage rules for future ML work.
 *   [`docs/phase-1-summary.md`](docs/phase-1-summary.md) — what Phase 1 changed, and its known limitations.
+*   [`docs/market-state.md`](docs/market-state.md) — the market state at a decision time, and its feature-status model.
+*   [`docs/feature-contract.md`](docs/feature-contract.md) — what a feature must declare, and how a feature set is versioned.
+*   [`docs/phase-2a-summary.md`](docs/phase-2a-summary.md) — what Phase 2A changed, and its known limitations.
 
 ## 🗄️ Tick data retention
 
