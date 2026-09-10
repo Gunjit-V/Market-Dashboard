@@ -117,6 +117,39 @@ That the 11:15 session accounts for precisely 24 `insufficient_history` and 50
 `missing` slots — rather than approximately — is a useful check that the
 session-anchoring rules do what they claim.
 
+### The 1-minute set
+
+```
+rows         261,000 across 696 sessions     46.9 MB
+features     4,643,226/4,698,000 valid (98.8%)
+labels       2,232,738/2,349,000 valid (95.1%)
+source data  WARNING
+```
+
+Availability is *higher* at 1m than at 5m, which is the warmup arithmetic
+working as intended: windows are matched by elapsed time, so `ret_30m` costs 30
+bars of a 375-bar session (8%) rather than 6 of 75 (8%) — but the session-open
+and session-end costs are amortised over five times as many rows.
+
+Quantities that mean the same thing on both timeframes agree closely, which is
+a useful independent cross-check that the time-matched windows are matched
+correctly:
+
+| Column | 1m median | 5m median |
+|---|---|---|
+| `session_ret` | −0.00023 | −0.00022 |
+| `overnight_gap` | +0.00071 | +0.00073 |
+| `pos_in_range` | +0.51679 | +0.51778 |
+| `rv_baseline` | +0.08981 | +0.08810 |
+
+`overnight_gap` agreeing to four decimal places is the strongest of these: it
+is the same computation over the same session boundaries, differing only
+because the previous session's last bar is 15:29 at 1m and 15:25 at 5m.
+
+`rv_regime` differs more (0.895 vs 0.843) because its short window holds 100
+one-minute returns against 20 five-minute ones — the same elapsed time,
+different estimator noise.
+
 ### Distributions
 
 | Column | Median | Sanity check |

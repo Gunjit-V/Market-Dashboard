@@ -18,8 +18,16 @@ Checkpoint 2A is recorded separately in
 > A versioned feature dataset exists where `timestamp → feature_vector(timestamp)`
 > is reproducible and point-in-time safe.
 
-**Met.** 52,200 rows across 696 sessions, versioned `fs_5m_381e35d4`,
-with the leakage property asserted as an executable test rather than claimed.
+**Met.** Two datasets, both versioned and both verified against the live
+one-at-a-time path:
+
+| Timeframe | Rows | Sessions | Size | Version | Features valid | Labels valid |
+|---|---|---|---|---|---|---|
+| 5m | 52,200 | 696 | 10.7 MB | `fs_5m_381e35d4` | 97.1% | 91.4% |
+| 1m | 261,000 | 696 | 46.9 MB | `fs_1m_dab72e07` | 98.8% | 95.1% |
+
+Both span 2023-11-21 to 2026-09-10, and the leakage property is asserted as an
+executable test rather than claimed.
 
 ---
 
