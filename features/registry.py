@@ -82,7 +82,33 @@ def _load_families() -> None:
                 raise
 
 
-def feature_set(timeframe: str, names: Iterable[str] | None = None) -> FeatureSet:
+#: Canonical family order for the emitted vector. Registration happens at
+#: module import, so raw registration order depends on which module Python
+#: imported first -- and a test that imports ``features.volatility`` directly
+#: would otherwise produce a different column order, and therefore a different
+#: version hash, than a normal run. Sorting by family (stably, so order
+#: *within* a family is still registration order) makes the vector independent
+#: of import sequence.
+FAMILY_ORDER = ("price", "volatility", "volume", "cross", "label")
+
+
+def _family_rank(spec: FeatureSpec) -> int:
+    try:
+        return FAMILY_ORDER.index(spec.family)
+    except ValueError:  # a family not yet listed sorts last, deterministically
+        return len(FAMILY_ORDER)
+
+
+def _canonical_order(specs: Iterable[FeatureSpec]) -> list[FeatureSpec]:
+    """Specs in canonical family order, stable within each family."""
+    return sorted(specs, key=_family_rank)
+
+
+def feature_set(
+    timeframe: str,
+    names: Iterable[str] | None = None,
+    families: Iterable[str] | None = None,
+) -> FeatureSet:
     """The registered features for *timeframe*, in registration order.
 
     Parameters
@@ -92,6 +118,10 @@ def feature_set(timeframe: str, names: Iterable[str] | None = None) -> FeatureSe
     names
         Optional subset. The set's own order is preserved regardless of the
         order given here, so a caller cannot accidentally permute the vector.
+    families
+        Optional family filter. Everything is returned by default; use
+        :func:`state_features` and :func:`label_set` for the two splits that
+        matter, rather than passing ``families`` by hand.
     """
     if timeframe not in BARS_PER_SESSION:
         raise SpecError(
@@ -99,10 +129,33 @@ def feature_set(timeframe: str, names: Iterable[str] | None = None) -> FeatureSe
             f"choose from {', '.join(sorted(BARS_PER_SESSION))}"
         )
     _load_families()
-    built = FeatureSet(timeframe=timeframe, specs=tuple(_REGISTRY.get(timeframe, ())))
+    specs = tuple(_canonical_order(_REGISTRY.get(timeframe, ())))
+    if families is not None:
+        wanted = set(families)
+        specs = tuple(s for s in specs if s.family in wanted)
+    built = FeatureSet(timeframe=timeframe, specs=specs)
     if names is None:
         return built
     return built.select(list(names))
+
+
+#: Families that describe the market at a decision time. Everything except
+#: labels, which are what *happened next* and were not knowable at T.
+STATE_FAMILIES = ("price", "volatility", "volume", "cross")
+
+
+def state_features(timeframe: str) -> FeatureSet:
+    """The features that make up a :class:`~features.state.MarketState`.
+
+    Labels are excluded by construction. A label is the answer, not the
+    question, and letting one into the state is how a dataset trains on itself.
+    """
+    return feature_set(timeframe, families=STATE_FAMILIES)
+
+
+def label_set(timeframe: str) -> FeatureSet:
+    """The forward-looking labels registered for *timeframe*."""
+    return feature_set(timeframe, families=("label",))
 
 
 def registered_names(timeframe: str) -> tuple[str, ...]:
@@ -172,12 +225,16 @@ def _reset_registry_for_tests(factory: Callable[[], None] | None = None) -> None
 
 
 __all__ = [
+    "FAMILY_ORDER",
     "HASH_SCHEME_VERSION",
+    "STATE_FAMILIES",
     "describe",
     "feature_set",
+    "label_set",
     "feature_set_digest",
     "feature_set_version",
     "register",
     "register_all",
     "registered_names",
+    "state_features",
 ]

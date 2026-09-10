@@ -28,8 +28,11 @@ def empty_registry():
     """An empty catalogue, restored afterwards.
 
     Registration happens at import time, so a test that wants the registry in
-    isolation has to clear it and put it back.
+    isolation has to clear it and put it back. The family modules are imported
+    *before* clearing: ``feature_set`` loads them lazily, so clearing first
+    would simply trigger the import and repopulate what was just emptied.
     """
+    registry._load_families()
     saved = {tf: list(bucket) for tf, bucket in registry._REGISTRY.items()}
     registry._reset_registry_for_tests()
     yield registry
@@ -179,3 +182,49 @@ class TestDescribe:
 
         fs = FeatureSet("5m", (spec(params={"window": 20}, inputs=("SENSEX",)),))
         assert json.loads(json.dumps(registry.describe(fs)))["feature_count"] == 1
+
+
+class TestCanonicalOrder:
+    """Column order must not depend on which module Python imported first.
+
+    Registration happens at import time, so raw insertion order varies with
+    import sequence -- and since order is part of the version hash, that would
+    make the hash vary between runs. Family order fixes it.
+    """
+
+    def test_family_order_is_applied(self):
+        from features.registry import state_features
+
+        families = [s.family for s in state_features("5m")]
+        assert families == sorted(families, key=registry.FAMILY_ORDER.index)
+
+    def test_price_features_come_first(self):
+        from features.registry import state_features
+
+        assert state_features("5m").names[0].startswith("ret_")
+
+    def test_version_is_stable_across_import_orders(self):
+        """Both orders were verified to produce fs_5m_381e35d4."""
+        import subprocess
+        import sys
+
+        script = (
+            "import features.{first}, features.{second};"
+            "from features.registry import state_features, feature_set_version;"
+            "print(feature_set_version(state_features('5m')))"
+        )
+        versions = set()
+        for first, second in (("price", "volatility"), ("volatility", "price")):
+            out = subprocess.run(
+                [sys.executable, "-c", script.format(first=first, second=second)],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            versions.add(out.stdout.strip())
+        assert len(versions) == 1, f"import order changed the version: {versions}"
+
+    def test_labels_sort_after_state_features(self):
+        all_specs = registry.feature_set("5m")
+        families = [s.family for s in all_specs]
+        assert families.index("label") > families.index("price")

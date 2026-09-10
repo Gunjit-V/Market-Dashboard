@@ -39,13 +39,34 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 # still only ever read *completed* history, so the point-in-time guarantee is
 # untouched -- see docs/point-in-time-data.md.
 #
+# ROLLING features read a continuous window of the most recent completed bars,
+# regardless of which session they fall in, and *exclude any term that spans a
+# session boundary*. They exist because a volatility estimate that restarts
+# every morning is unavailable for the first quarter of each session, while the
+# quantity it measures does not restart at all.
+#
+# The exclusion is not a nicety. Measured on Nifty 50 5-minute bars, a
+# session-boundary log return has 7.6x the standard deviation of an intraday
+# one -- 58x the variance. A single boundary return inside a 20-return window
+# inflates the variance 3.9x and overstates realized volatility 2.0x, every
+# morning, in a way that is indistinguishable from the genuine opening-session
+# volatility it would be confused with.
+#
+# Only *path-dependent aggregates* may be ROLLING: a sum over per-bar terms
+# survives dropping one term. A point-to-point span such as
+# ``close[0]/close[-12]`` may not -- the overnight move sits inside a single
+# ratio and cannot be separated from it, so those features stay INTRADAY.
+#
 # SESSION features are computed once per session from its boundary (the
-# overnight gap is the only one today). They are knowable at the open.
+# overnight gap is the only one today). Note they become available when the
+# opening bar *closes*, not at the opening instant: with bar data alone, the
+# 09:15 bar's open is not knowable until 09:20.
 INTRADAY = "intraday"
+ROLLING = "rolling"
 TRAILING = "trailing"
 SESSION = "session"
 
-SCOPES = (INTRADAY, TRAILING, SESSION)
+SCOPES = (INTRADAY, ROLLING, TRAILING, SESSION)
 
 # Families from the Phase 2 brief. Tick/microstructure is deliberately absent:
 # tick history is capped by TICK_RETENTION_DAYS, so there is not enough of it
@@ -181,11 +202,17 @@ class FeatureSpec:
 
     @property
     def required_bars(self) -> int:
-        """Total completed bars this feature needs to produce a value.
+        """Completed bars this feature needs, as a *fetch hint*.
 
-        For an intraday or session feature that is just the warmup. For a
-        trailing feature it also spans the baseline sessions, which is what the
-        pipeline must fetch for it.
+        For intraday, rolling and session features this is the warmup. For a
+        trailing feature it also spans the baseline sessions.
+
+        It is a hint, not a contract: sessions are not uniformly full (5% of
+        Nifty 50 sessions are short, one has 17 bars), and a rolling window
+        that drops boundary terms consumes more bars than it yields returns.
+        Computations therefore verify for themselves that they got enough
+        usable observations and return INSUFFICIENT_HISTORY when they did not,
+        rather than trusting this number.
         """
         warmup = self.warmup_bars or 0
         if self.scope == TRAILING:
@@ -288,6 +315,7 @@ __all__ = [
     "DEFAULT_TRAILING_SESSIONS",
     "FAMILIES",
     "INTRADAY",
+    "ROLLING",
     "SCOPES",
     "SESSION",
     "TRAILING",
