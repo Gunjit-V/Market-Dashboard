@@ -18,9 +18,9 @@ the same thing on both timeframes (3 bars at 5m, 15 bars at 1m).
 from __future__ import annotations
 
 from features.registry import register
-from features.spec import INTRADAY, SESSION, FeatureSpec
+from features.spec import INTRADAY, MINUTES_PER_BAR, SESSION, FeatureSpec
 from features.state import FeatureStatus, FeatureValue, insufficient_history
-from features.windows import BarWindow, simple_return
+from features.windows import BarWindow, simple_return, span_minutes, spans_expected
 
 #: Return horizons per timeframe, as (name, bars). Each timeframe starts at its
 #: own bar size, so no two columns are the same quantity under two names.
@@ -35,12 +35,29 @@ def _missing(spec: FeatureSpec, detail: str) -> FeatureValue:
 
 
 def compute_return(spec: FeatureSpec, window: BarWindow) -> FeatureValue:
-    """``close[0] / close[-n] - 1`` over the current session."""
+    """``close[0] / close[-n] - 1`` over the current session.
+
+    The span is checked against the clock, not just counted in bars. A missing
+    in-session bar stretches it -- on 2026-09-10 the 15:15 bar is absent, so
+    three bars after 15:00 lands on 15:20 -- and a point-to-point return is
+    fixed entirely by its endpoints, so a stretched span is a different
+    measurement rather than a slightly biased one. Reporting it under a column
+    named for fifteen minutes would be exactly the mislabelling the status
+    model exists to prevent.
+    """
     bars = window.intraday()
     n = spec.params["bars"]
     if len(bars) < n + 1:
         return insufficient_history(spec, len(bars))
-    value = simple_return(bars[-1 - n].close, bars[-1].close)
+    start, end = bars[-1 - n], bars[-1]
+    bar_minutes = MINUTES_PER_BAR[spec.timeframe]
+    if not spans_expected(start, end, n, bar_minutes):
+        return _missing(
+            spec,
+            f"gap stretched the window to {span_minutes(start, end):.0f} min, "
+            f"expected {n * bar_minutes}",
+        )
+    value = simple_return(start.close, end.close)
     if value is None:
         return _missing(spec, "non-positive reference close")
     return FeatureValue.valid(spec.name, value)
@@ -51,6 +68,13 @@ def compute_acceleration(spec: FeatureSpec, window: BarWindow) -> FeatureValue:
     bars = window.intraday()
     if len(bars) < 3:
         return insufficient_history(spec, len(bars))
+    bar_minutes = MINUTES_PER_BAR[spec.timeframe]
+    if not spans_expected(bars[-3], bars[-1], 2, bar_minutes):
+        return _missing(
+            spec,
+            f"gap stretched the window to "
+            f"{span_minutes(bars[-3], bars[-1]):.0f} min, expected {2 * bar_minutes}",
+        )
     latest = simple_return(bars[-2].close, bars[-1].close)
     previous = simple_return(bars[-3].close, bars[-2].close)
     if latest is None or previous is None:

@@ -78,6 +78,11 @@ FAMILIES = ("price", "volatility", "volume", "cross", "label")
 # unit and its bar count differs per timeframe.
 BARS_PER_SESSION = {"1m": 375, "5m": 75}
 
+#: Wall-clock minutes one bar covers. Used to check that a span of N bars
+#: really covers N*minutes of clock time -- an in-session gap can stretch it,
+#: and a column named ``ret_15m`` holding a 20-minute move is mislabelled data.
+MINUTES_PER_BAR = {"1m": 1, "5m": 5}
+
 # The trailing baseline, in completed sessions. Five is roughly a week: long
 # enough to be a stable notion of "normal", short enough to follow a genuine
 # regime shift. It is a default rather than a constant so that alternatives
@@ -312,6 +317,7 @@ class FeatureSet:
 
 __all__ = [
     "BARS_PER_SESSION",
+    "MINUTES_PER_BAR",
     "DEFAULT_TRAILING_SESSIONS",
     "FAMILIES",
     "INTRADAY",

@@ -146,3 +146,46 @@ class TestRegistration:
 
     def test_horizon_table_covers_both_timeframes(self):
         assert set(LABEL_HORIZONS) == {"1m", "5m"}
+
+
+class TestGapStretchedHorizons:
+    """A label's horizon must mean what its name says.
+
+    On 2026-09-10 the 15:15 bar is absent, so three bars after 15:00 reaches
+    15:20 -- a twenty-minute return in a column named fwd_ret_15m. Since a
+    label is what a model is asked to predict, a horizon that does not mean
+    what it says would be learned as though it did.
+    """
+
+    def gapped_forward(self):
+        bars = session(DAYS[0], count=10)
+        return bars[0], [b for i, b in enumerate(bars[1:], start=1) if i != 2]
+
+    def test_stretched_horizon_is_missing(self):
+        current, forward = self.gapped_forward()
+        value = compute_forward_return(spec(bars=3), current, forward)
+        assert value.status is FeatureStatus.MISSING
+        assert "stretched the horizon" in value.detail
+        assert "expected 15" in value.detail
+
+    def test_contiguous_horizon_is_valid(self):
+        bars = session(DAYS[0], count=10)
+        assert compute_forward_return(spec(bars=3), bars[0], bars[1:]).is_valid
+
+    def test_direction_inherits_the_rejection(self):
+        current, forward = self.gapped_forward()
+        value = compute_forward_direction(
+            spec("fwd_dir_15m", compute_forward_direction, bars=3), current, forward
+        )
+        assert value.status is FeatureStatus.MISSING
+
+    def test_forward_rv_inherits_the_rejection(self):
+        current, forward = self.gapped_forward()
+        value = compute_forward_rv(
+            spec("fwd_rv_15m", compute_forward_rv, bars=3), current, forward
+        )
+        assert value.status is FeatureStatus.MISSING
+
+    def test_short_horizon_before_the_gap_still_works(self):
+        current, forward = self.gapped_forward()
+        assert compute_forward_return(spec(bars=1), current, forward).is_valid

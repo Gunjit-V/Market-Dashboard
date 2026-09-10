@@ -255,3 +255,56 @@ class TestRegistration:
         for timeframe in ("1m", "5m"):
             names = state_features(timeframe).names
             assert len(names) == len(set(names))
+
+
+class TestGapStretchedWindows:
+    """A missing in-session bar must not silently widen a point-to-point span.
+
+    Real case: on 2026-09-10 (a Thursday expiry) the 15:15 five-minute bar is
+    absent from both tables, so the bars run 15:10 -> 15:20. A "one bar back"
+    return computed at 15:25 then measures ten minutes, not five.
+    """
+
+    def gapped(self, day=None):
+        """A session with the 4th bar removed, mimicking the real gap."""
+        day = day or DAYS[0]
+        bars = session(day, count=10)
+        return [b for i, b in enumerate(bars) if i != 3]
+
+    def test_return_across_a_gap_is_missing(self):
+        bars = self.gapped()
+        # The 5th bar sits 10 minutes after the 3rd, not 5.
+        w = window(bars[:4], DAYS[0])
+        value = compute_return(spec(bars=1), w)
+        assert value.status is FeatureStatus.MISSING
+        assert "stretched" in value.detail
+        assert "10 min" in value.detail and "expected 5" in value.detail
+
+    def test_contiguous_return_is_unaffected(self):
+        bars = session(DAYS[0], count=10)
+        assert compute_return(spec(bars=1), window(bars, DAYS[0])).is_valid
+
+    def test_longer_horizon_across_a_gap_is_missing(self):
+        bars = self.gapped()
+        value = compute_return(spec(bars=3), window(bars[:6], DAYS[0]))
+        assert value.status is FeatureStatus.MISSING
+
+    def test_acceleration_across_a_gap_is_missing(self):
+        bars = self.gapped()
+        value = compute_acceleration(
+            spec("accel_1", compute_acceleration), window(bars[:4], DAYS[0])
+        )
+        assert value.status is FeatureStatus.MISSING
+
+    def test_single_bar_features_are_unaffected_by_a_gap(self):
+        """range_rel reads one bar, so a gap elsewhere cannot stretch it."""
+        bars = self.gapped()
+        value = compute_range_rel(
+            spec("range_rel", compute_range_rel), window(bars[:5], DAYS[0])
+        )
+        assert value.is_valid
+
+    def test_window_beyond_the_gap_recovers(self):
+        """Once the span no longer contains the gap, values return."""
+        bars = self.gapped()
+        assert compute_return(spec(bars=1), window(bars[:6], DAYS[0])).is_valid

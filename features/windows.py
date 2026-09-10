@@ -201,6 +201,23 @@ def log_returns(
     return out
 
 
+def span_minutes(earlier: Bar, later: Bar) -> float:
+    """Wall-clock minutes between two bar labels."""
+    return (later.timestamp - earlier.timestamp).total_seconds() / 60.0
+
+
+def spans_expected(earlier: Bar, later: Bar, bars: int, bar_minutes: int) -> bool:
+    """Whether *bars* steps really cover *bars * bar_minutes* of clock time.
+
+    A missing in-session bar silently stretches a span: on 2026-09-10 the
+    15:15 five-minute bar is absent, so "three bars after 15:00" lands on
+    15:20 -- twenty minutes later, not fifteen. A point-to-point return is
+    determined entirely by its two endpoints, so that stretch is not a small
+    bias but a different measurement wearing the same column name.
+    """
+    return span_minutes(earlier, later) == bars * bar_minutes
+
+
 def simple_return(earlier: float, later: float) -> float | None:
     """``later/earlier - 1``, or ``None`` when it is undefined."""
     if earlier <= 0:
@@ -269,6 +286,8 @@ __all__ = [
     "log_returns",
     "session_span",
     "simple_return",
+    "span_minutes",
+    "spans_expected",
     "stdev",
     "true_ranges",
     "window_start_for",

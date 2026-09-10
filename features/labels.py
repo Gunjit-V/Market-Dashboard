@@ -25,10 +25,10 @@ from typing import Sequence
 
 from marketdata.access import Bar
 from features.registry import register
-from features.spec import INTRADAY, FeatureSpec
+from features.spec import INTRADAY, MINUTES_PER_BAR, FeatureSpec
 from features.state import FeatureStatus, FeatureValue
 from features.volatility import annualization
-from features.windows import log_returns, simple_return, stdev
+from features.windows import log_returns, simple_return, span_minutes, stdev
 
 #: Prediction horizons per timeframe, as (suffix, bars). Named by elapsed time
 #: so a horizon means the same span on both timeframes.
@@ -56,6 +56,31 @@ def _forward_slice(
     return tuple(forward[:horizon])
 
 
+def _stretched(
+    spec: FeatureSpec,
+    current: Bar,
+    window: Sequence[Bar],
+) -> FeatureValue | None:
+    """Reject a horizon that a missing bar has stretched past its name.
+
+    On 2026-09-10 -- a Thursday expiry -- the 15:15 five-minute bar is absent,
+    so "three bars after 15:00" reaches 15:20. The resulting number is a
+    twenty-minute return sitting in a column named ``fwd_ret_15m``. Since the
+    label is what a model is asked to predict, a horizon that does not mean
+    what it says would be learned as though it did.
+    """
+    horizon = spec.params["bars"]
+    bar_minutes = MINUTES_PER_BAR[spec.timeframe]
+    expected = horizon * bar_minutes
+    actual = span_minutes(current, window[-1])
+    if actual != expected:
+        return _unavailable(
+            spec,
+            f"gap stretched the horizon to {actual:.0f} min, expected {expected}",
+        )
+    return None
+
+
 def compute_forward_return(
     spec: FeatureSpec,
     current: Bar,
@@ -68,6 +93,9 @@ def compute_forward_return(
         return _unavailable(
             spec, f"only {len(forward)} bars remain in the session, need {horizon}"
         )
+    stretched = _stretched(spec, current, window)
+    if stretched is not None:
+        return stretched
     value = simple_return(current.close, window[-1].close)
     if value is None:
         return _unavailable(spec, "non-positive close at the decision bar")
@@ -112,6 +140,9 @@ def compute_forward_rv(
         return _unavailable(
             spec, f"only {len(forward)} bars remain in the session, need {horizon}"
         )
+    stretched = _stretched(spec, current, window)
+    if stretched is not None:
+        return stretched
     returns = log_returns((current,) + window)
     value = stdev(returns)
     if value is None:
