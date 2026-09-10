@@ -31,6 +31,7 @@ A comprehensive algorithmic trading and market data collection platform designed
 ├── db/              # Database models, schemas, and connection utilities
 ├── docs/            # Architecture, data contracts, validation, point-in-time semantics
 ├── downloader/      # Scripts for tick collection, OHLCV fetching, and instruments loading
+├── features/        # Feature engineering: market state, versioned feature datasets
 ├── frontend/        # React frontend application
 ├── logs/            # Application and script log files
 ├── marketdata/      # Data contracts, validation, quality reporting, dataset access
@@ -245,7 +246,64 @@ python -m pytest
 *   [`docs/phase-1-summary.md`](docs/phase-1-summary.md) — what Phase 1 changed, and its known limitations.
 *   [`docs/market-state.md`](docs/market-state.md) — the market state at a decision time, and its feature-status model.
 *   [`docs/feature-contract.md`](docs/feature-contract.md) — what a feature must declare, and how a feature set is versioned.
+*   [`docs/feature-dataset.md`](docs/feature-dataset.md) — building, reading and interpreting a feature dataset.
 *   [`docs/phase-2a-summary.md`](docs/phase-2a-summary.md) — what Phase 2A changed, and its known limitations.
+*   [`docs/phase-2-summary.md`](docs/phase-2-summary.md) — what Phase 2 changed, and its known limitations.
+
+## 🧮 Feature engineering
+
+The `features/` package turns validated market data into an ML-ready
+representation: a reproducible, point-in-time-safe `feature_vector(t)`.
+
+**18 features and 9 labels** for Nifty 50, on both 1-minute and 5-minute bars.
+Price features (returns, momentum, candle structure, the overnight gap) reset
+at each session open so a column keeps one meaning; volatility features roll
+across sessions — excluding any term that spans a boundary, which would
+otherwise overstate realized volatility 2x every morning — and are normalised
+against a baseline of the last five *observed* sessions.
+
+Every feature reads through `marketdata.access.get_market_data(..., as_of=T)`,
+so the point-in-time cut-off lives in SQL and a bar that had not closed cannot
+reach a computation. `tests/test_feature_point_in_time.py` asserts the
+property directly: `state(T)` is bit-identical whether computed from the full
+history or from history truncated at `T`.
+
+Every value carries a status — `valid`, `insufficient_history`, `missing`,
+`stale`, `invalid_source`, `market_closed` — so absence is never rendered as a
+plausible-looking number.
+
+Read the state at one moment (historical or live):
+
+```python
+from features.engine import build_market_state
+
+state = build_market_state(conn, "Nifty 50", decision_time, "5m")
+state.value_of("rv_regime")     # 0.43 -- less than half the trailing week's volatility
+state.status_of("rv_regime")    # FeatureStatus.VALID
+```
+
+Generate a versioned historical dataset:
+
+```bash
+python -m features.build --instrument "Nifty 50" --timeframe 5m
+python -m features.build --list
+```
+
+Datasets land in `data/features/` (gitignored) as Parquet plus a JSON manifest,
+named by the feature-set version so a rebuilt definition never silently
+replaces an old one:
+
+```python
+from features.registry import state_features
+from features.store import read_dataset
+
+df = read_dataset("Nifty 50", state_features("5m"))
+df[df.rv_regime > 2.0]
+```
+
+See [`docs/feature-contract.md`](docs/feature-contract.md) for the definitions
+and [`docs/feature-dataset.md`](docs/feature-dataset.md) for the dataset
+format.
 
 ## 🗄️ Tick data retention
 
