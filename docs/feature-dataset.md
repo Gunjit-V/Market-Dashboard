@@ -126,10 +126,19 @@ labels       2,232,738/2,349,000 valid (95.1%)
 source data  WARNING
 ```
 
-Availability is *higher* at 1m than at 5m, which is the warmup arithmetic
-working as intended: windows are matched by elapsed time, so `ret_30m` costs 30
-bars of a 375-bar session (8%) rather than 6 of 75 (8%) — but the session-open
-and session-end costs are amortised over five times as many rows.
+Availability is *higher* at 1m than at 5m, and the reason is the horizon
+tables rather than anything about resolution. Each timeframe starts its return
+horizons at its own bar size, so the longest lookback is `ret_60m` at 5m but
+only `ret_30m` at 1m:
+
+| | Longest horizon | Bars needed | Share of session |
+|---|---|---|---|
+| 5m | `ret_60m` | 13 of 75 | **17.3%** |
+| 1m | `ret_30m` | 31 of 375 | **8.3%** |
+
+The same asymmetry applies to the labels, whose longest horizon is likewise 60
+minutes at 5m and 30 at 1m. Extending the 1m set to a 60-minute horizon would
+bring its availability down to match.
 
 Quantities that mean the same thing on both timeframes agree closely, which is
 a useful independent cross-check that the time-matched windows are matched
