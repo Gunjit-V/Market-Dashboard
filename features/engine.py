@@ -24,9 +24,6 @@ from __future__ import annotations
 from datetime import datetime, time
 from typing import Any, Iterable, Sequence
 
-from marketdata.access import Bar, get_market_data
-from marketdata.sessions import DEFAULT_SESSION_CLOSE, DEFAULT_SESSION_OPEN
-
 from features.quality import SourceQuality
 from features.registry import feature_set_version, label_set, state_features
 from features.spec import TRAILING, FeatureSet, FeatureSpec
@@ -38,6 +35,8 @@ from features.state import (
     summarize_quality,
 )
 from features.windows import BarWindow, window_start_for
+from marketdata.access import Bar, get_market_data
+from marketdata.sessions import DEFAULT_SESSION_CLOSE, DEFAULT_SESSION_OPEN
 
 #: Prior sessions the read window must cover even when no trailing feature asks
 #: for more -- ``overnight_gap`` needs the previous session's close.

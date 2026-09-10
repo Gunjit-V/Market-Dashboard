@@ -23,12 +23,12 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from marketdata.access import Bar
 from features.registry import register
 from features.spec import INTRADAY, MINUTES_PER_BAR, FeatureSpec
 from features.state import FeatureStatus, FeatureValue
 from features.volatility import annualization
 from features.windows import log_returns, simple_return, span_minutes, stdev
+from marketdata.access import Bar
 
 #: Prediction horizons per timeframe, as (suffix, bars). Named by elapsed time
 #: so a horizon means the same span on both timeframes.

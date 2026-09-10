@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from marketdata.validation import validate_ohlcv
-
 from features.quality import (
     FAIL,
     PASS,
@@ -24,6 +22,7 @@ from features.quality import (
     window_quality,
     worst_verdict,
 )
+from marketdata.validation import validate_ohlcv
 from tests.conftest import bar, bars
 
 START = datetime(2026, 9, 3, 9, 15)
