@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from features.dataset import BuildStats
-from features.quality import summarize_sources, worst_verdict
+from features.quality import FAIL, PASS, WARNING, summarize_sources, worst_verdict
 from features.registry import describe, feature_set_digest, feature_set_version
 from features.spec import FeatureSet
 
@@ -86,9 +86,10 @@ def build_manifest(
     """Everything a reader needs to judge a dataset without rebuilding it.
 
     ``extracted_at`` is recorded because the market-data tables carry no
-    as-of versioning (``docs/point-in-time-data.md`` §5.4): if the vendor
-    revises a bar, the original is not retained, so the pull time is the only
-    honest record of what this dataset saw.
+    as-of versioning (see "No as-of versioning of the data itself" in
+    ``docs/02-market-data.md``): if the vendor revises a bar, the original is
+    not retained, so the pull time is the only honest record of what this
+    dataset saw.
     """
     now = extracted_at or datetime.now(timezone.utc)
     quality = summarize_sources(stats.source_quality)
@@ -177,6 +178,191 @@ def write_dataset(
     return target
 
 
+def dataset_sessions(
+    instrument: str,
+    fs: FeatureSet,
+    root: Path | str = DEFAULT_ROOT,
+) -> list[date]:
+    """Session dates already present in a dataset, ascending.
+
+    Empty when no dataset exists yet, which is what lets an incremental build
+    fall back to a full one without a special case.
+    """
+    import pandas as pd
+
+    target = paths_for(instrument, fs, root)
+    if not target.parquet.exists():
+        return []
+    frame = pd.read_parquet(target.parquet, columns=["decision_time"])
+    if frame.empty:
+        return []
+    return sorted({t.date() for t in frame["decision_time"]})
+
+
+def resume_from(
+    instrument: str,
+    fs: FeatureSet,
+    root: Path | str = DEFAULT_ROOT,
+) -> date | None:
+    """The session an incremental build should restart at, or ``None``.
+
+    Deliberately the **last session already stored**, not the day after it. A
+    dataset written while a session was still running holds only part of that
+    session, and appending strictly after it would leave the remainder missing
+    for good. Rebuilding one session is cheap; silently losing half of one is
+    not.
+    """
+    sessions = dataset_sessions(instrument, fs, root)
+    return sessions[-1] if sessions else None
+
+
+def stats_from_frame(frame, fs: FeatureSet, labels: FeatureSet) -> BuildStats:
+    """Recompute dataset-wide counts from the rows themselves.
+
+    An incremental build could instead add the new counts to the old ones, but
+    that has to stay in step with which sessions were replaced, and a drift
+    there would be invisible. Counting the final rows cannot drift.
+    """
+    stats = BuildStats()
+    stats.rows = len(frame)
+    if stats.rows == 0:
+        return stats
+    stats.sessions = len({t.date() for t in frame["decision_time"]})
+    stats.first_decision = min(frame["decision_time"]).to_pydatetime()
+    stats.last_decision = max(frame["decision_time"]).to_pydatetime()
+    for spec in fs:
+        for status, n in frame[f"{spec.name}__status"].value_counts().items():
+            stats.status_counts[f"{spec.name}:{status}"] = int(n)
+    for spec in labels:
+        for status, n in frame[f"{spec.name}__status"].value_counts().items():
+            stats.label_status_counts[f"{spec.name}:{status}"] = int(n)
+    return stats
+
+
+def _merge_source_quality(
+    old: dict[str, Any] | None,
+    new_stats: BuildStats,
+    rebuilt_from: date,
+) -> dict[str, Any]:
+    """Combine the previous run's validation summary with this run's.
+
+    Windows from sessions that were rebuilt are dropped from the old summary,
+    so a session validated twice is counted once. Only windows that found
+    something are stored in a manifest, so the aggregate counts are adjusted
+    from the old totals rather than recomputed from that filtered list.
+    """
+    fresh = summarize_sources(new_stats.source_quality)
+    if not old:
+        return fresh
+
+    kept = [
+        w for w in old.get("windows", [])
+        if date.fromisoformat(w["start"][:10]) < rebuilt_from
+    ]
+    dropped = [
+        w for w in old.get("windows", [])
+        if date.fromisoformat(w["start"][:10]) >= rebuilt_from
+    ]
+    old_sessions_replaced = len({w["start"][:10] for w in dropped})
+
+    merged = kept + fresh["windows"]
+    if any(w.get("error_count", 0) for w in merged):
+        verdict = FAIL
+    elif any(w.get("warning_count", 0) for w in merged):
+        verdict = WARNING
+    else:
+        verdict = PASS
+
+    return {
+        "verdict": verdict,
+        "window_count": max(0, old.get("window_count", 0) - old_sessions_replaced)
+        + fresh["window_count"],
+        "error_count": max(
+            0, old.get("error_count", 0) - sum(w.get("error_count", 0) for w in dropped)
+        )
+        + fresh["error_count"],
+        "warning_count": max(
+            0,
+            old.get("warning_count", 0)
+            - sum(w.get("warning_count", 0) for w in dropped),
+        )
+        + fresh["warning_count"],
+        "windows": merged,
+    }
+
+
+def append_dataset(
+    rows: Iterable[dict[str, Any]],
+    instrument: str,
+    fs: FeatureSet,
+    labels: FeatureSet,
+    stats: BuildStats,
+    rebuilt_from: date,
+    end: date,
+    root: Path | str = DEFAULT_ROOT,
+    extracted_at: datetime | None = None,
+) -> DatasetPaths:
+    """Merge freshly built sessions into an existing dataset.
+
+    Rows for ``rebuilt_from`` onward are discarded from the stored file and
+    replaced by the new ones, so re-running is idempotent and a partially
+    written session is completed rather than duplicated.
+
+    The result must be indistinguishable from a full rebuild;
+    ``tests/test_feature_dataset.py`` asserts exactly that.
+    """
+    import pandas as pd
+
+    target = paths_for(instrument, fs, root)
+    columns = column_order(fs, labels)
+    fresh = pd.DataFrame(list(rows), columns=columns)
+
+    if target.parquet.exists():
+        stored = pd.read_parquet(target.parquet)
+        kept = stored[stored["decision_time"].dt.date < rebuilt_from]
+        combined = pd.concat([kept, fresh], ignore_index=True)
+    else:
+        combined = fresh
+
+    combined = combined.sort_values(
+        "decision_time", kind="stable"
+    ).reset_index(drop=True)
+    combined = combined[columns]
+
+    old_manifest = None
+    if target.manifest.exists():
+        try:
+            old_manifest = json.loads(target.manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            old_manifest = None
+
+    total = stats_from_frame(combined, fs, labels)
+    total.source_quality = stats.source_quality
+
+    Path(root).mkdir(parents=True, exist_ok=True)
+    combined.to_parquet(target.parquet, index=False, compression="snappy")
+
+    start = (
+        date.fromisoformat(old_manifest["range"]["start"])
+        if old_manifest and "range" in old_manifest
+        else min(t.date() for t in combined["decision_time"])
+    )
+    manifest = build_manifest(instrument, fs, labels, total, start, end, extracted_at)
+    manifest["source_quality"] = _merge_source_quality(
+        (old_manifest or {}).get("source_quality"), stats, rebuilt_from
+    )
+    manifest["source_verdict"] = manifest["source_quality"]["verdict"]
+    # Derived from the rows actually written, not from the caller's counters:
+    # a manifest should describe what is in the file, whatever route produced it.
+    manifest["incremental"] = {
+        "rebuilt_from": rebuilt_from.isoformat(),
+        "sessions_built": len({t.date() for t in fresh["decision_time"]}),
+        "rows_built": len(fresh),
+    }
+    target.manifest.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return target
+
+
 def read_dataset(
     instrument: str,
     fs: FeatureSet,
@@ -241,13 +427,17 @@ def list_datasets(root: Path | str = DEFAULT_ROOT) -> list[dict[str, Any]]:
 __all__ = [
     "DEFAULT_ROOT",
     "DatasetPaths",
+    "append_dataset",
     "build_manifest",
+    "dataset_sessions",
     "column_order",
     "dataset_name",
     "list_datasets",
     "paths_for",
     "read_dataset",
     "read_manifest",
+    "resume_from",
     "slug",
+    "stats_from_frame",
     "write_dataset",
 ]

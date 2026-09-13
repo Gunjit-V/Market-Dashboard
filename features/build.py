@@ -2,7 +2,14 @@
 
     python -m features.build --instrument "Nifty 50" --timeframe 5m
     python -m features.build --instrument "Nifty 50" --from 2026-01-01 --to 2026-09-10
+    python -m features.build --instrument "Nifty 50" --append
     python -m features.build --instrument "Nifty 50" --timeframe 1m --dry-run
+
+``--append`` rebuilds from the last session already stored rather than from
+the start, which turns a daily refresh from tens of minutes into seconds. It
+restarts *at* that session rather than after it: a dataset written while a
+session was still running holds only part of it, and appending strictly
+after would leave the remainder missing for good.
 
 Exit codes follow ``marketdata.report`` so this is usable as a scheduled check:
 0 the build succeeded and its source data was clean, 1 it succeeded with
@@ -19,7 +26,14 @@ from pathlib import Path
 from features.dataset import BuildStats, build_dataset, observed_sessions
 from features.quality import FAIL, PASS, WARNING
 from features.registry import feature_set_version, label_set, state_features
-from features.store import DEFAULT_ROOT, list_datasets, paths_for, write_dataset
+from features.store import (
+    DEFAULT_ROOT,
+    append_dataset,
+    list_datasets,
+    paths_for,
+    resume_from,
+    write_dataset,
+)
 
 EXIT_OK = 0
 EXIT_WARNING = 1
@@ -49,6 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="ISO end date; defaults to the latest session")
     parser.add_argument("--out", default=str(DEFAULT_ROOT),
                         help=f"output directory (default {DEFAULT_ROOT})")
+    parser.add_argument("--append", action="store_true",
+                        help="build only sessions from the last stored one "
+                             "onward and merge into the existing dataset")
     parser.add_argument("--dry-run", action="store_true",
                         help="report what would be built, write nothing")
     parser.add_argument("--no-validate", action="store_true",
@@ -107,12 +124,25 @@ def main(argv: list[str] | None = None) -> int:
     labels = label_set(args.timeframe)
     target = paths_for(args.instrument, fs, args.out)
 
+    # An incremental run restarts at the last stored session. With no dataset
+    # yet -- or an explicit --from -- it is simply a full build, so there is no
+    # separate code path to keep in step.
+    resume = None
+    if args.append and args.start is None:
+        resume = resume_from(args.instrument, fs, args.out)
+        if resume is not None:
+            start = max(start, resume)
+
     if not args.quiet:
         print(f"instrument   {args.instrument}  ({args.timeframe})")
         print(f"range        {start} .. {end}")
         print(f"features     {len(fs)}  version {feature_set_version(fs)}")
         print(f"labels       {len(labels)}  version {feature_set_version(labels)}")
         print(f"output       {target.parquet}")
+        if resume is not None:
+            print(f"mode         append -- rebuilding from {resume} onward")
+        elif args.append:
+            print("mode         append requested, no existing dataset: full build")
 
     if args.dry_run:
         sessions = observed_sessions(conn, args.instrument, start, end, args.timeframe)
@@ -145,9 +175,14 @@ def main(argv: list[str] | None = None) -> int:
         validate=not args.no_validate,
         progress=progress,
     )
-    written = write_dataset(
-        rows, args.instrument, fs, labels, stats, start, end, root=args.out
-    )
+    if resume is not None:
+        written = append_dataset(
+            rows, args.instrument, fs, labels, stats, resume, end, root=args.out
+        )
+    else:
+        written = write_dataset(
+            rows, args.instrument, fs, labels, stats, start, end, root=args.out
+        )
 
     verdict = _report(stats, written, args.quiet)
     return {PASS: EXIT_OK, WARNING: EXIT_WARNING, FAIL: EXIT_FAIL}[verdict]

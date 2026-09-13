@@ -25,12 +25,18 @@ from features.engine import build_state_from_bars, compute_labels, state_row
 from features.registry import feature_set_version, label_set, state_features
 from features.state import FeatureStatus, FeatureValue
 from features.store import (
+    append_dataset,
     build_manifest,
     column_order,
     dataset_name,
+    dataset_sessions,
     list_datasets,
     paths_for,
+    read_dataset,
+    resume_from,
     slug,
+    stats_from_frame,
+    write_dataset,
 )
 from tests.featurelib import sessions, trading_days
 
@@ -357,3 +363,224 @@ class TestCli:
 
         assert main(["--list", "--out", str(tmp_path)]) == 0
         assert "No datasets" in capsys.readouterr().out
+
+
+class TestIncrementalBuild:
+    """An incremental build must be indistinguishable from a full one.
+
+    This is the same guarantee the fast path carries, for the same reason: if
+    appending ever diverged from rebuilding, a dataset grown day by day would
+    quietly stop matching one built in a single pass, and nothing would say so.
+    """
+
+    def build(self, days, history, fs, labels):
+        """Rows and stats for a list of sessions, as the CLI would produce."""
+        stats = BuildStats()
+        rows = []
+        for day in days:
+            rows.extend(build_session_rows(day, history, "Nifty 50", fs, labels, stats))
+        return rows, stats
+
+    def test_append_equals_full_rebuild(self, history, fs, labels, tmp_path):
+        pytest.importorskip("pandas")
+        import pandas as pd
+
+        full_dir, inc_dir = tmp_path / "full", tmp_path / "inc"
+
+        # One pass over every session.
+        rows, stats = self.build(DAYS, history, fs, labels)
+        write_dataset(rows, "Nifty 50", fs, labels, stats, DAYS[0], DAYS[-1], full_dir)
+
+        # Built in two goes: the first six sessions, then the rest appended.
+        rows_a, stats_a = self.build(DAYS[:6], history, fs, labels)
+        write_dataset(rows_a, "Nifty 50", fs, labels, stats_a, DAYS[0], DAYS[5], inc_dir)
+
+        resume = resume_from("Nifty 50", fs, inc_dir)
+        assert resume == DAYS[5]
+        rows_b, stats_b = self.build(DAYS[5:], history, fs, labels)
+        append_dataset(rows_b, "Nifty 50", fs, labels, stats_b, resume, DAYS[-1], inc_dir)
+
+        a = read_dataset("Nifty 50", fs, full_dir)
+        b = read_dataset("Nifty 50", fs, inc_dir)
+        pd.testing.assert_frame_equal(a, b)
+
+    def test_append_is_idempotent(self, history, fs, labels, tmp_path):
+        pytest.importorskip("pandas")
+
+        rows, stats = self.build(DAYS[:6], history, fs, labels)
+        write_dataset(rows, "Nifty 50", fs, labels, stats, DAYS[0], DAYS[5], tmp_path)
+
+        for _ in range(2):
+            resume = resume_from("Nifty 50", fs, tmp_path)
+            more, more_stats = self.build(
+                [d for d in DAYS if d >= resume], history, fs, labels
+            )
+            append_dataset(
+                more, "Nifty 50", fs, labels, more_stats, resume, DAYS[-1], tmp_path
+            )
+            frame = read_dataset("Nifty 50", fs, tmp_path)
+            assert len(frame) == len(DAYS) * 75
+            assert not frame.decision_time.duplicated().any()
+
+    def test_resume_restarts_at_the_last_session_not_after_it(
+        self, history, fs, labels, tmp_path
+    ):
+        """A dataset written mid-session must be completed, not skipped past."""
+        pytest.importorskip("pandas")
+
+        # Store a deliberately partial final session: only its first 20 rows.
+        rows, stats = self.build(DAYS[:5], history, fs, labels)
+        partial = [r for r in rows if r["decision_time"].date() < DAYS[4]]
+        partial += [
+            r for r in rows if r["decision_time"].date() == DAYS[4]
+        ][:20]
+        write_dataset(
+            partial, "Nifty 50", fs, labels, stats, DAYS[0], DAYS[4], tmp_path
+        )
+        assert len(read_dataset("Nifty 50", fs, tmp_path)) == 4 * 75 + 20
+
+        resume = resume_from("Nifty 50", fs, tmp_path)
+        assert resume == DAYS[4], "must restart AT the partial session"
+
+        more, more_stats = self.build([DAYS[4]], history, fs, labels)
+        append_dataset(
+            more, "Nifty 50", fs, labels, more_stats, resume, DAYS[4], tmp_path
+        )
+        frame = read_dataset("Nifty 50", fs, tmp_path)
+        assert len(frame) == 5 * 75, "the partial session should now be complete"
+        assert not frame.decision_time.duplicated().any()
+
+    def test_append_without_an_existing_dataset_is_a_full_build(
+        self, history, fs, labels, tmp_path
+    ):
+        pytest.importorskip("pandas")
+
+        assert resume_from("Nifty 50", fs, tmp_path) is None
+        rows, stats = self.build(DAYS, history, fs, labels)
+        append_dataset(
+            rows, "Nifty 50", fs, labels, stats, DAYS[0], DAYS[-1], tmp_path
+        )
+        assert len(read_dataset("Nifty 50", fs, tmp_path)) == len(DAYS) * 75
+
+    def test_rows_stay_ordered_after_appending(self, history, fs, labels, tmp_path):
+        pytest.importorskip("pandas")
+
+        rows, stats = self.build(DAYS[:6], history, fs, labels)
+        write_dataset(rows, "Nifty 50", fs, labels, stats, DAYS[0], DAYS[5], tmp_path)
+        resume = resume_from("Nifty 50", fs, tmp_path)
+        more, more_stats = self.build(DAYS[5:], history, fs, labels)
+        append_dataset(
+            more, "Nifty 50", fs, labels, more_stats, resume, DAYS[-1], tmp_path
+        )
+        times = read_dataset("Nifty 50", fs, tmp_path).decision_time.tolist()
+        assert times == sorted(times)
+
+    def test_column_order_survives_an_append(self, history, fs, labels, tmp_path):
+        pytest.importorskip("pandas")
+
+        rows, stats = self.build(DAYS[:6], history, fs, labels)
+        write_dataset(rows, "Nifty 50", fs, labels, stats, DAYS[0], DAYS[5], tmp_path)
+        resume = resume_from("Nifty 50", fs, tmp_path)
+        more, more_stats = self.build(DAYS[5:], history, fs, labels)
+        append_dataset(
+            more, "Nifty 50", fs, labels, more_stats, resume, DAYS[-1], tmp_path
+        )
+        assert list(read_dataset("Nifty 50", fs, tmp_path).columns) == column_order(
+            fs, labels
+        )
+
+
+class TestIncrementalManifest:
+    def build(self, days, history, fs, labels):
+        stats = BuildStats()
+        rows = []
+        for day in days:
+            rows.extend(build_session_rows(day, history, "Nifty 50", fs, labels, stats))
+        return rows, stats
+
+    def test_counts_cover_the_whole_dataset_not_just_the_new_part(
+        self, history, fs, labels, tmp_path
+    ):
+        pytest.importorskip("pandas")
+        from features.store import read_manifest
+
+        rows, stats = self.build(DAYS[:6], history, fs, labels)
+        write_dataset(rows, "Nifty 50", fs, labels, stats, DAYS[0], DAYS[5], tmp_path)
+        resume = resume_from("Nifty 50", fs, tmp_path)
+        more, more_stats = self.build(DAYS[5:], history, fs, labels)
+        append_dataset(
+            more, "Nifty 50", fs, labels, more_stats, resume, DAYS[-1], tmp_path
+        )
+
+        manifest = read_manifest("Nifty 50", fs, tmp_path)
+        assert manifest["rows"] == len(DAYS) * 75
+        assert manifest["sessions"] == len(DAYS)
+        total = sum(
+            n for k, n in manifest["feature_status_counts"].items()
+            if k.startswith("rv_short:")
+        )
+        assert total == len(DAYS) * 75
+
+    def test_manifest_records_what_was_rebuilt(self, history, fs, labels, tmp_path):
+        pytest.importorskip("pandas")
+        from features.store import read_manifest
+
+        rows, stats = self.build(DAYS[:6], history, fs, labels)
+        write_dataset(rows, "Nifty 50", fs, labels, stats, DAYS[0], DAYS[5], tmp_path)
+        resume = resume_from("Nifty 50", fs, tmp_path)
+        more, more_stats = self.build(DAYS[5:], history, fs, labels)
+        append_dataset(
+            more, "Nifty 50", fs, labels, more_stats, resume, DAYS[-1], tmp_path
+        )
+
+        inc = read_manifest("Nifty 50", fs, tmp_path)["incremental"]
+        assert inc["rebuilt_from"] == DAYS[5].isoformat()
+        assert inc["sessions_built"] == 3
+        assert inc["rows_built"] == 3 * 75
+
+    def test_range_start_is_preserved_across_an_append(
+        self, history, fs, labels, tmp_path
+    ):
+        """The dataset still begins where it began, not where the append did."""
+        pytest.importorskip("pandas")
+        from features.store import read_manifest
+
+        rows, stats = self.build(DAYS[:6], history, fs, labels)
+        write_dataset(rows, "Nifty 50", fs, labels, stats, DAYS[0], DAYS[5], tmp_path)
+        resume = resume_from("Nifty 50", fs, tmp_path)
+        more, more_stats = self.build(DAYS[5:], history, fs, labels)
+        append_dataset(
+            more, "Nifty 50", fs, labels, more_stats, resume, DAYS[-1], tmp_path
+        )
+        assert read_manifest("Nifty 50", fs, tmp_path)["range"]["start"] == (
+            DAYS[0].isoformat()
+        )
+
+
+class TestStoreHelpers:
+    def test_dataset_sessions_lists_what_is_stored(self, history, fs, labels, tmp_path):
+        pytest.importorskip("pandas")
+
+        stats = BuildStats()
+        rows = []
+        for day in DAYS[:4]:
+            rows.extend(build_session_rows(day, history, "Nifty 50", fs, labels, stats))
+        write_dataset(rows, "Nifty 50", fs, labels, stats, DAYS[0], DAYS[3], tmp_path)
+        assert dataset_sessions("Nifty 50", fs, tmp_path) == list(DAYS[:4])
+
+    def test_dataset_sessions_empty_without_a_dataset(self, fs, tmp_path):
+        assert dataset_sessions("Nifty 50", fs, tmp_path) == []
+
+    def test_stats_from_frame_matches_a_live_build(self, history, fs, labels, tmp_path):
+        pytest.importorskip("pandas")
+        import pandas as pd
+
+        stats = BuildStats()
+        rows = list(build_session_rows(DAYS[5], history, "Nifty 50", fs, labels, stats))
+        frame = pd.DataFrame(rows, columns=column_order(fs, labels))
+        recomputed = stats_from_frame(frame, fs, labels)
+
+        assert recomputed.rows == stats.rows
+        assert recomputed.sessions == 1
+        assert recomputed.status_counts == stats.status_counts
+        assert recomputed.label_status_counts == stats.label_status_counts
