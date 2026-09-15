@@ -35,6 +35,7 @@ A comprehensive algorithmic trading and market data collection platform designed
 ├── frontend/        # React frontend application
 ├── logs/            # Application and script log files
 ├── marketdata/      # Data contracts, validation, quality reporting, dataset access
+├── research/        # Evaluation harness: splits, baselines, metrics, reports
 ├── scheduler/       # Cron jobs and automated pipeline scripts
 ├── tests/           # Pytest suite (no database or network required)
 └── .env             # Environment variables (API keys, DB credentials)
@@ -246,6 +247,9 @@ python -m pytest
 3.  [`docs/03-features.md`](docs/03-features.md) — the market state at a decision time, the feature contract and versioning, and how to build and read a dataset.
 4.  [`docs/04-project-history.md`](docs/04-project-history.md) — what each phase changed, and every open limitation.
 5.  [`docs/05-phase-2-brief.md`](docs/05-phase-2-brief.md) — the original Phase 2 specification, archived.
+6.  [`docs/06-feature-reference.md`](docs/06-feature-reference.md) — every feature and label one at a time: formula, worked example, failure modes, distribution.
+7.  [`docs/07-phase-3-brief.md`](docs/07-phase-3-brief.md) — the Phase 3 specification: what Phase 2 settled, the checkpoints, and the rules that are not negotiable.
+8.  [`docs/08-evaluation.md`](docs/08-evaluation.md) — the evaluation harness: splits, baselines, metrics and reports.
 
 ## 🧮 Feature engineering
 
@@ -306,6 +310,38 @@ df[df.rv_regime > 2.0]
 
 See [`docs/03-features.md`](docs/03-features.md) for the definitions, the
 versioning rules and the dataset format.
+
+## 📏 Evaluation
+
+The `research/` package is the yardstick a forecast is measured against. It
+ships **no models** — that is the point of the checkpoint it belongs to. What it
+ships is the comparison, because every impressive number in this project's
+exploratory work disappeared under a correct baseline or a second metric.
+
+* **Splits are chronological or they do not exist.** A random split raises at
+  construction rather than reporting a number, and at least one session is
+  dropped between training and test so no training label was observed during
+  the test window.
+* **Every result carries its baseline.** Best-naive (`max(always_up,
+  always_down)`, chosen on the window being scored), the training mean,
+  persistence and bias-corrected persistence are first-class predictors,
+  fitted and scored by the same code as a model. A comparison without one
+  cannot be constructed.
+* **Error and ranking are reported separately.** A model that improves RMSE
+  while degrading — or simply not having — a correlation is reported as
+  `mixed`, never as a win.
+* **Walk-forward, with the windows shown.** Consistency is counted in windows
+  won, not averaged away, and every report states the effect size its smallest
+  window could have detected and how many hypotheses were tested.
+
+```bash
+python -m research.run --instrument "Nifty 50" --label fwd_rv_60m
+python -m research.run --label fwd_dir_30m --train 20 --test 5
+```
+
+The metrics are standard library only, so every number is hand-checkable, and
+`tests/test_research_metrics.py` checks them that way. See
+[`docs/08-evaluation.md`](docs/08-evaluation.md).
 
 ## 🗄️ Tick data retention
 

@@ -289,10 +289,103 @@ arithmetic; `None` does not, and that is the point.
 
 ---
 
+## Phase 3A — Evaluation Harness
+
+**Status: complete, stopped for approval.** The Phase 3 brief divides the phase
+into three checkpoints with two stop gates, and 3B does not begin until 3A is
+reviewed. That structure is copied from Phase 2, where reviewing before building
+on top caught four real bugs.
+
+### What it added
+
+A `research/` package — the yardstick, and deliberately **no models**.
+
+| Module | What it holds |
+|---|---|
+| `panel.py` | The rows an evaluation runs over, and the answers it hides from models |
+| `splits.py` | Chronological splits, the session gap, walk-forward windows |
+| `baselines.py` | Best-naive, train-mean, persistence, bias-corrected persistence, constants |
+| `metrics.py` | Accuracy + interval, RMSE, correlation, power arithmetic, multiplicity |
+| `evaluate.py` | Fitting and scoring, with the leakage checks that make it mean something |
+| `report.py` | Results that refuse to appear without their baseline |
+| `dataset.py` | The one door to Phase 2's point-in-time datasets |
+| `run.py` | `python -m research.run` — the baselines, scored on a stored dataset |
+
+Full documentation in [08-evaluation.md](08-evaluation.md).
+
+### The exit criterion
+
+The brief's §5 acceptance, all five met:
+
+| | Criterion | How |
+|---|---|---|
+| 1 | Baseline scores with confidence intervals from a labelled dataset | `python -m research.run`, and `TestRun` end to end through the Phase 2 store |
+| 2 | A deliberately leaky split is detected and rejected | `Split.__post_init__` raises; a shuffled calendar cannot be made into a split |
+| 3 | Walk-forward yields the expected number of windows | `window_count()` in closed form, checked against the generator over seven ranges |
+| 4 | Every metric unit-tested against hand-computed values | 59 tests in `test_research_metrics.py`, constants derived in the comments |
+| 5 | No database, no network | 238 tests, none of which touch either |
+
+### Two bugs found by writing the tests down
+
+Both are the same failure mode Phase 2 kept hitting — arithmetic producing a
+number where there is nothing — and both were invisible until a test asked for
+the value by hand.
+
+**A constant predictor appeared to have a correlation.** Sixty copies of `0.12`
+have a floating-point variance of 5e-34, not zero, so the textbook formula
+returned `r = -2e-15` with a confidence interval around it. A constant predictor
+ranks nothing; the fix tests `min == max` rather than `variance == 0`, and the
+correlation is now reported as undefined with a reason attached — the same
+shape as the Phase 2 feature-status model.
+
+**A provably identical ranking was reported as a loss.** Bias-corrected
+persistence is plain persistence times a positive scalar, so the two have
+identical correlations in principle and correlations differing by ~1e-16 in
+practice. A bare `<` turned that into "the model ranks worse" in the one
+comparison built specifically to demonstrate that rescaling changes nothing
+about ranking. Verdicts now treat a relative difference below 1e-12 as a tie.
+
+### Design decisions worth knowing about
+
+**Enforcement lives in constructors, not in review.** A leaky split raises when
+it is built, a comparison without a baseline cannot be instantiated, and a
+masked panel raises rather than returning `None`. The brief's §4.1 was violated
+twice in Phase 2, once by a subagent given the rule in writing; a rule that
+depends on remembering it will be broken again.
+
+**The best-naive classifier reads the test window on purpose.** Its definition
+is "the best constant answer on this window", and which constant that is depends
+on the window. It declares `uses_test_labels`, and the evaluator accepts that
+declaration only from a baseline.
+
+**The metrics are standard library only.** `statistics.NormalDist` and
+`math.lgamma` cover every quantile and tail the harness needs, which keeps each
+number hand-checkable. The binomial tail is exact rather than normal-approximated
+because the figures it produces are small-n statements about how often noise
+looks like a result, which is where the approximation is worst. It reproduces
+the brief's own numbers exactly: 24.0% and 38.8% at n=50.
+
+**The gap is counted in sessions.** A weekend is not a session, so a gap
+expressed in calendar days would silently be no gap at all across a Monday.
+
+**Nine labels, six independent hypotheses.** `fwd_dir_h` is the sign of
+`fwd_ret_h`, so the family error rate over the label set is 1 − 0.95⁶ = 0.265 —
+the brief's 26% — and not the 0.370 that counting all nine would give. The
+ledger asks for the independent count rather than inferring it.
+
+### Not built, deliberately
+
+No models, no fitting, no feature selection, no economic evaluation. 3B and 3C
+are separate checkpoints behind separate approvals.
+
+---
+
 ## Tests
 
-**577 passed, 1 skipped** (~6 s), from **578 collected**. No database, no
-network, no live market data, and no dependence on the current date. Tests that
+**577 passed, 1 skipped** (~6 s), from **578 collected** at the end of Phase 2.
+Phase 3A adds **238** in `tests/test_research_*.py`, taking the suite to **816
+collected**. No database, no network, no live market data, and no dependence on
+the current date. Tests that
 care about trading days inject their own calendar predicate, so results cannot
 drift as the bundled NSE holiday list is extended.
 

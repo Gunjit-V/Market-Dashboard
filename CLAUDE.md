@@ -119,15 +119,23 @@ Compose defines 7 services. In practice only the 4 schedulers run:
 (`pytest` itself is the only dev dependency). If a test wants a live DB or an
 Angel One session, that's a bug in the test.
 
+`research/` (the Phase 3A evaluation harness) keeps that rule and adds one: its
+metrics are stdlib-only, so every number in `tests/test_research_metrics.py` is
+checked against a value computed by hand rather than against the code's own
+output. Its reports are deterministic — no clock, no unseeded randomness — so
+two runs over the same panel must agree exactly.
+
 ## Docs
 
 `docs/` carries the design record, numbered in reading order:
 `01-architecture.md`, `02-market-data.md` (contracts + point-in-time +
 validation), `03-features.md` (market state + feature contract + datasets),
 `04-project-history.md` (phases and open limitations), `05-phase-2-brief.md`
-(archived spec). `docs/README.md` is the index. Check there before inferring
-intent from code, especially around point-in-time semantics and feature
-contracts.
+and `07-phase-3-brief.md` (archived specs), `06-feature-reference.md` (every
+feature and label individually), `08-evaluation.md` (the Phase 3A evaluation
+harness and the rules it enforces). `docs/README.md` is the index. Check there
+before inferring intent from code, especially around point-in-time semantics
+and feature contracts.
 
 The operational notes above are duplicated, in fuller prose, in
 `docs/01-architecture.md`. When one changes, change the other.
