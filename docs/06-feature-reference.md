@@ -83,8 +83,11 @@ Session context: opened at **23446.60**, high so far **23494.95**, low so far
 ### Distributions
 
 Each feature carries its measured distribution over the 5-minute dataset —
-52,200 rows, 696 sessions, 2023-11-21 to 2026-09-10. These are what the numbers
+52,275 rows, 697 sessions, 2023-11-21 to 2026-09-11. These are what the numbers
 actually look like, not what they theoretically could be.
+
+Figures were first measured on a 696-session build and re-checked against the
+current one; every median quoted below is unchanged to the precision shown.
 
 ---
 
@@ -234,10 +237,15 @@ cannot say that.
 ### Exact calculation
 
 ```
-ret_Nm = c[0] / c[-N] − 1
+ret_Nm = ( c[0] / c[-N] ) − 1
 ```
 
 where `N` is the bar count for that horizon at that timeframe.
+
+> **Read the parentheses.** The `− 1` applies to the *result of the division*,
+> not to the denominator. `c[0] / c[-N]` gives a ratio near 1.0 (e.g. 0.999368);
+> subtracting 1 recentres it on zero (−0.000632), so the sign reads directly as
+> up or down.
 
 ### Worked example — `ret_15m` at 14:00
 
@@ -306,8 +314,8 @@ that is not.
 ### Exact calculation
 
 ```
-latest   = c[0]  / c[-1] − 1
-previous = c[-1] / c[-2] − 1
+latest   = ( c[0]  / c[-1] ) − 1
+previous = ( c[-1] / c[-2] ) − 1
 accel_1  = latest − previous
 ```
 
@@ -517,7 +525,7 @@ the session.
 ### Exact calculation
 
 ```
-session_ret = c[0] / open_of_the_09:15_bar − 1
+session_ret = ( c[0] / open_of_the_09:15_bar ) − 1
 ```
 
 Note the denominator is the **open** of the session's first bar, not its close.
@@ -637,7 +645,7 @@ nothing is lost by excluding it elsewhere.
 ### Exact calculation
 
 ```
-overnight_gap = open_of_the_09:15_bar / close_of_the_previous_session − 1
+overnight_gap = ( open_of_the_09:15_bar / close_of_the_previous_session ) − 1
 ```
 
 The previous session is whichever session **most recently appears in the data**
@@ -759,7 +767,7 @@ The 20 within-session returns ending at 13:55 have standard deviation
 | Fewer than `n` within-session returns available | `insufficient_history` | `needs 20 within-session observations, 4 available` |
 
 In practice this happens only at the very start of all stored history — **21 of
-52,200 rows (0.04%)**. Every other row has a value, including at 09:15, because
+52,275 rows (0.04%)**. Every other row has a value, including at 09:15, because
 the window reaches into yesterday.
 
 ### Distribution (5m)
@@ -1090,7 +1098,7 @@ returns = boundary-excluded log returns, most recent last
 current  = sd( returns[−n:] )               the last n returns
 earlier  = sd( returns[−(n+lag) : −lag] )   the n returns ending lag bars ago
 
-rv_accel = current / earlier − 1
+rv_accel = ( current / earlier ) − 1
 ```
 
 with `n = 20, lag = 6` at 5m (100-minute window, 30-minute lag) and
@@ -1201,7 +1209,7 @@ With `f[1..h]` the bars strictly after the decision bar, within the same
 session:
 
 ```
-fwd_ret_h = f[h].close / c[0] − 1
+fwd_ret_h = ( f[h].close / c[0] ) − 1
 ```
 
 Note it uses the close of the bar **at** the horizon, not the last available
@@ -1383,36 +1391,36 @@ more extreme highs and more spuriously low readings.
 
 | Feature | Family | Scope | Window | Formula | Valid |
 |---|---|---|---|---|---|
-| `ret_5m` | price | intraday | 1 bar | `c[0]/c[-1] − 1` | 97.2% |
-| `ret_15m` | price | intraday | 3 bars | `c[0]/c[-3] − 1` | 94.5% |
-| `ret_30m` | price | intraday | 6 bars | `c[0]/c[-6] − 1` | 90.5% |
-| `ret_60m` | price | intraday | 12 bars | `c[0]/c[-12] − 1` | 82.4% |
+| `ret_5m` | price | intraday | 1 bar | `(c[0]/c[-1]) − 1` | 97.2% |
+| `ret_15m` | price | intraday | 3 bars | `(c[0]/c[-3]) − 1` | 94.5% |
+| `ret_30m` | price | intraday | 6 bars | `(c[0]/c[-6]) − 1` | 90.5% |
+| `ret_60m` | price | intraday | 12 bars | `(c[0]/c[-12]) − 1` | 82.4% |
 | `accel_1` | price | intraday | 3 bars | `ret(0) − ret(-1)` | 95.9% |
 | `range_rel` | price | intraday | 1 bar | `(h−l)/c` | 98.6% |
 | `body_ratio` | price | intraday | 1 bar | `\|c−o\|/(h−l)` | 98.5% |
 | `upper_wick` | price | intraday | 1 bar | `(h−max(o,c))/(h−l)` | 98.5% |
 | `lower_wick` | price | intraday | 1 bar | `(min(o,c)−l)/(h−l)` | 98.5% |
-| `session_ret` | price | intraday | session | `c[0]/open_0915 − 1` | 98.5% |
+| `session_ret` | price | intraday | session | `(c[0]/open_0915) − 1` | 98.5% |
 | `pos_in_range` | price | intraday | session | `(c−low)/(high−low)` | 98.5% |
-| `overnight_gap` | price | session | boundary | `open_0915/prev_close − 1` | 98.4% |
+| `overnight_gap` | price | session | boundary | `(open_0915/prev_close) − 1` | 98.4% |
 | `rv_short` | volatility | **rolling** | 20 returns | `sd(log returns) × 137.48` | 100.0% |
 | `parkinson_short` | volatility | **rolling** | 20 bars | `sqrt(k·mean(ln(h/l)²)) × 137.48` | 100.0% |
 | `atr_rel` | volatility | **rolling** | 14 bars | `mean(true range)/c[0]` | 100.0% |
 | `rv_baseline` | volatility | **trailing** | 5 sessions | `sd(log returns) × 137.48` | 99.3% |
 | `rv_regime` | volatility | **trailing** | ratio | `rv_short / rv_baseline` | 99.3% |
-| `rv_accel` | volatility | **rolling** | 20 + lag 6 | `sd(now)/sd(30m ago) − 1` | 99.9% |
+| `rv_accel` | volatility | **rolling** | 20 + lag 6 | `(sd(now)/sd(30m ago)) − 1` | 99.9% |
 
 ## Labels
 
 | Label | Horizon (5m) | Formula | Valid |
 |---|---|---|---|
-| `fwd_ret_15m` | 3 bars | `f[3].close/c[0] − 1` | 95.5% |
+| `fwd_ret_15m` | 3 bars | `(f[3].close/c[0]) − 1` | 95.5% |
 | `fwd_dir_15m` | 3 bars | `sign(fwd_ret_15m)` | 95.5% |
 | `fwd_rv_15m` | 3 bars | `sd(3 fwd returns) × 137.48` | 95.5% |
-| `fwd_ret_30m` | 6 bars | `f[6].close/c[0] − 1` | 91.5% |
+| `fwd_ret_30m` | 6 bars | `(f[6].close/c[0]) − 1` | 91.5% |
 | `fwd_dir_30m` | 6 bars | `sign(fwd_ret_30m)` | 91.5% |
 | `fwd_rv_30m` | 6 bars | `sd(6 fwd returns) × 137.48` | 91.5% |
-| `fwd_ret_60m` | 12 bars | `f[12].close/c[0] − 1` | 83.5% |
+| `fwd_ret_60m` | 12 bars | `(f[12].close/c[0]) − 1` | 83.5% |
 | `fwd_dir_60m` | 12 bars | `sign(fwd_ret_60m)` | 83.5% |
 | `fwd_rv_60m` | 12 bars | `sd(12 fwd returns) × 137.48` | 83.5% |
 
@@ -1454,8 +1462,8 @@ with these dependencies in mind.
 # Where the numbers came from
 
 Every distribution figure in this document was measured on the 5-minute dataset
-built 2026-09-11 — 52,200 rows across 696 sessions, 2023-11-21 to 2026-09-10,
-feature-set version `fs_5m_381e35d4`. The worked examples are real output from
+— 52,275 rows across 697 sessions, 2023-11-21 to 2026-09-11, feature-set version
+`fs_5m_381e35d4`. The worked examples are real output from
 `build_market_state` at 2026-09-10 14:00, cross-checked by hand against the raw
 bars.
 

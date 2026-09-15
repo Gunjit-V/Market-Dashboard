@@ -29,7 +29,7 @@ A comprehensive algorithmic trading and market data collection platform designed
 ├── dashboard/       # Simple WebSocket-powered live dashboard client & server
 ├── data/            # Local data storage and exports
 ├── db/              # Database models, schemas, and connection utilities
-├── docs/            # Architecture, data contracts, validation, point-in-time semantics
+├── docs/            # Numbered in reading order; start at docs/README.md
 ├── downloader/      # Scripts for tick collection, OHLCV fetching, and instruments loading
 ├── features/        # Feature engineering: market state, versioned feature datasets
 ├── frontend/        # React frontend application
@@ -239,16 +239,13 @@ python -m pytest
 
 ### Documentation
 
-*   [`docs/current-architecture.md`](docs/current-architecture.md) — the system as it exists today.
-*   [`docs/data-contract.md`](docs/data-contract.md) — canonical schemas for ticks, 1m and 5m OHLCV.
-*   [`docs/validation.md`](docs/validation.md) — validation rules, quality reporting, how to run both.
-*   [`docs/point-in-time-data.md`](docs/point-in-time-data.md) — temporal semantics and leakage rules for future ML work.
-*   [`docs/phase-1-summary.md`](docs/phase-1-summary.md) — what Phase 1 changed, and its known limitations.
-*   [`docs/market-state.md`](docs/market-state.md) — the market state at a decision time, and its feature-status model.
-*   [`docs/feature-contract.md`](docs/feature-contract.md) — what a feature must declare, and how a feature set is versioned.
-*   [`docs/feature-dataset.md`](docs/feature-dataset.md) — building, reading and interpreting a feature dataset.
-*   [`docs/phase-2a-summary.md`](docs/phase-2a-summary.md) — what Phase 2A changed, and its known limitations.
-*   [`docs/phase-2-summary.md`](docs/phase-2-summary.md) — what Phase 2 changed, and its known limitations.
+[`docs/`](docs/README.md) is numbered in reading order:
+
+1.  [`docs/01-architecture.md`](docs/01-architecture.md) — the system as it exists today: services, data flow, storage, and how to operate it.
+2.  [`docs/02-market-data.md`](docs/02-market-data.md) — canonical schemas for ticks/1m/5m, point-in-time semantics, and every validation check.
+3.  [`docs/03-features.md`](docs/03-features.md) — the market state at a decision time, the feature contract and versioning, and how to build and read a dataset.
+4.  [`docs/04-project-history.md`](docs/04-project-history.md) — what each phase changed, and every open limitation.
+5.  [`docs/05-phase-2-brief.md`](docs/05-phase-2-brief.md) — the original Phase 2 specification, archived.
 
 ## 🧮 Feature engineering
 
@@ -286,8 +283,14 @@ Generate a versioned historical dataset:
 
 ```bash
 python -m features.build --instrument "Nifty 50" --timeframe 5m
+python -m features.build --instrument "Nifty 50" --timeframe 5m --append
 python -m features.build --list
 ```
+
+`--append` rebuilds only from the last stored session onward, turning a daily
+refresh from minutes (5m) or well over an hour (1m) into seconds. It restarts
+*at* that session rather than after it, so a dataset written mid-session is
+completed rather than skipped past.
 
 Datasets land in `data/features/` (gitignored) as Parquet plus a JSON manifest,
 named by the feature-set version so a rebuilt definition never silently
@@ -301,9 +304,8 @@ df = read_dataset("Nifty 50", state_features("5m"))
 df[df.rv_regime > 2.0]
 ```
 
-See [`docs/feature-contract.md`](docs/feature-contract.md) for the definitions
-and [`docs/feature-dataset.md`](docs/feature-dataset.md) for the dataset
-format.
+See [`docs/03-features.md`](docs/03-features.md) for the definitions, the
+versioning rules and the dataset format.
 
 ## 🗄️ Tick data retention
 
