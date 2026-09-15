@@ -5,7 +5,7 @@ invented: ``origin`` records whether the value comes straight from the Angel
 One feed (``source``), is produced by this project (``derived``), or is a
 database bookkeeping column (``storage``).
 
-See ``docs/data-contract.md`` for the prose version of this module.
+See ``docs/02-market-data.md`` for the prose version of this module.
 """
 
 from __future__ import annotations
@@ -166,7 +166,7 @@ TICK = DatasetContract(
     timestamp_semantics=(
         "Event time when the feed supplies last_traded_timestamp, processing "
         "time when it does not (downloader.tick_downloader.parse_tick falls "
-        "back to datetime.now()). See docs/point-in-time-data.md."
+        "back to datetime.now()). See docs/02-market-data.md."
     ),
     fields=(
         FieldSpec(
@@ -182,7 +182,7 @@ TICK = DatasetContract(
             description=(
                 "Last traded timestamp of the snapshot, naive. Interpreted in "
                 "the collector process's local timezone — see the known "
-                "limitation in docs/point-in-time-data.md."
+                "limitation in docs/02-market-data.md."
             ),
         ),
         FieldSpec(

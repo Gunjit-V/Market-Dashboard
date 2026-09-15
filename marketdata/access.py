@@ -3,7 +3,7 @@
 This is a thin, testable read layer over the tables that already exist — not a
 new data framework.  It exists so that every future feature/ML pipeline asks
 for history in exactly one way, with the temporal rules of
-``docs/point-in-time-data.md`` enforced in one place instead of being
+``docs/02-market-data.md`` enforced in one place instead of being
 re-implemented (and re-broken) per notebook.
 
 Guarantees

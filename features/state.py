@@ -212,7 +212,7 @@ class MarketState:
         The instant a decision would have been made, naive IST. Only data that
         had already become knowable at this instant contributed to any value --
         for bars that means bars which had *closed*, not merely started. See
-        ``docs/point-in-time-data.md``.
+        ``docs/02-market-data.md``.
     timeframe
         ``"1m"`` or ``"5m"``: the bar series the features were computed from.
     values

@@ -79,7 +79,7 @@ def test_a_malformed_run_time_falls_back(monkeypatch):
     assert (_run_time().hour, _run_time().minute) == (16, 30)
 
 
-# ── Clock-source marker (see docs/point-in-time-data.md 5.1) ─────────────────
+# ── Clock-source marker (see docs/02-market-data.md (Tick timestamps)) ─────────────────
 
 def test_exchange_clock_rows_are_identified_by_sequence_number():
     """Timestamp precision cannot identify the clock source; seq can.

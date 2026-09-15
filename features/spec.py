@@ -37,7 +37,7 @@ from typing import Any, Callable, Iterator, Mapping, Sequence
 # baseline, and a baseline drawn from this morning alone mostly measures the
 # normal intraday U-shape rather than anything informative. Trailing features
 # still only ever read *completed* history, so the point-in-time guarantee is
-# untouched -- see docs/point-in-time-data.md.
+# untouched -- see docs/02-market-data.md.
 #
 # ROLLING features read a continuous window of the most recent completed bars,
 # regardless of which session they fall in, and *exclude any term that spans a
@@ -70,7 +70,7 @@ SCOPES = (INTRADAY, ROLLING, TRAILING, SESSION)
 
 # Families from the Phase 2 brief. Tick/microstructure is deliberately absent:
 # tick history is capped by TICK_RETENTION_DAYS, so there is not enough of it
-# to train on (see docs/phase-2-summary.md).
+# to train on (see docs/04-project-history.md).
 FAMILIES = ("price", "volatility", "volume", "cross", "label")
 
 # Bars in one regular NSE session, by timeframe. A trailing window is expressed

@@ -190,7 +190,7 @@ def test_grid_alignment_can_be_switched_off(weekday_calendar):
 
 def test_a_bar_outside_trading_hours_is_a_warning(weekday_calendar):
     # 03:45 is 09:15 IST misread as UTC — exactly the failure mode described
-    # in docs/point-in-time-data.md.
+    # in docs/02-market-data.md.
     result = validate_ohlcv(
         [bar(datetime(2026, 9, 3, 3, 45))], "5m",
         is_trading_day=weekday_calendar, check_gaps=False,

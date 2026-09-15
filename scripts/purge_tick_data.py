@@ -2,7 +2,7 @@
 
 Why this exists
 ---------------
-Ticks collected before the timestamp fix (see docs/point-in-time-data.md 5.1)
+Ticks collected before the timestamp fix (see docs/02-market-data.md (Tick timestamps))
 carry ``datetime.now()`` rather than an exchange clock in ~98.7% of rows. The
 original event times were never stored, so those rows cannot be repaired and
 are not usable as precise event times. This script archives them to a

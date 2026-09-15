@@ -1,6 +1,6 @@
 """Non-destructive validation for tick and OHLCV records.
 
-Design rules (see docs/validation.md):
+Design rules (see docs/02-market-data.md):
 
 * Validators are **pure functions**. They never mutate, coerce, re-order,
   interpolate or otherwise "repair" the records handed to them. Financial data
@@ -520,7 +520,7 @@ def validate_ticks(
                     OUT_OF_SESSION, Severity.WARNING,
                     f"Tick timestamp {moment.isoformat()} falls outside a known "
                     "trading session — check the collector's timezone (see "
-                    "docs/point-in-time-data.md) before assuming bad data",
+                    "docs/02-market-data.md) before assuming bad data",
                     index=index, timestamp=moment,
                 ))
 

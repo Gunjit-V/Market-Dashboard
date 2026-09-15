@@ -38,7 +38,7 @@ def get_data_quality(
     """Validate stored data for *symbol* and return a data-quality report.
 
     Overall status is ``PASS``, ``WARNING`` or ``FAIL``; see
-    ``docs/validation.md`` for what each check means.
+    ``docs/02-market-data.md`` for what each check means.
     """
     try:
         if not to_date:

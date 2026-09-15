@@ -6,7 +6,7 @@ answers "what was knowable at T"; a label is by construction what happened
 answer. They are computed separately, from bars strictly after the decision
 bar, and stored in their own columns.
 
-Rule 5 of ``docs/point-in-time-data.md`` is what the separation enforces: the
+Rule 5 of ``docs/02-market-data.md`` is what the separation enforces: the
 label window starts after the last bar any feature touched, so no single bar is
 both an input and part of the answer.
 
