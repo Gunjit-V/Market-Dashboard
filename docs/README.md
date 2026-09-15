@@ -10,6 +10,7 @@ Read in order. Each document assumes the ones before it.
 | 4 | [04-project-history.md](04-project-history.md) | How did it get this way, and what is still broken or deferred? |
 | 5 | [05-phase-2-brief.md](05-phase-2-brief.md) | The original Phase 2 specification, archived unchanged. |
 | 6 | [06-feature-reference.md](06-feature-reference.md) | **Reference, not a sequential read.** Every feature and label one at a time: what it measures, why it exists, the exact formula, a worked example, and its measured distribution. |
+| 7 | [07-phase-3-brief.md](07-phase-3-brief.md) | The Phase 3 implementation brief: what Phase 2 settled, the checkpoints and stop gates, and the evaluation rules that are not negotiable. |
 
 ## Shortcuts
 
@@ -28,6 +29,11 @@ value carries its reason in a parallel `__status` column.
 **What does this column actually mean?**
 [06-feature-reference.md](06-feature-reference.md) documents all 18 features and
 9 labels individually — formula, worked example, failure modes, distribution.
+
+**About to build a model?**
+[07-phase-3-brief.md — Non-negotiables](07-phase-3-brief.md#4-non-negotiables).
+Seven rules, each written because breaking it produced a wrong answer during
+Phase 2. The baseline one matters most.
 
 **Wondering whether something is a bug or by design?**
 [04-project-history.md — Open limitations](04-project-history.md#open-limitations).
